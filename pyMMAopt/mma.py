@@ -16,6 +16,7 @@
 """
 
 import numpy as np
+import numexpr as ne
 from scipy.sparse import spdiags
 import time
 
