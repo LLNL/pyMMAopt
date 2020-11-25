@@ -31,7 +31,6 @@ class MMASolver(OptimizationSolver):
         passed in, if any."""
         param_defaults = {
             "m": 1,
-            "n": 1,
             "tol": 1e-8,
             "accepted_tol": 1e-4,
             "maximum_iterations": 100,
@@ -203,13 +202,15 @@ class MMASolver(OptimizationSolver):
         tol = self.parameters["tol"]
         accepted_tol = self.parameters["accepted_tol"]
         # Initial estimation
-        with self.rfn.controls[0].control.dat.vec_ro as control_vec:
+        control_function = self.rfn.controls[0].control
+        with control_function.dat.vec_ro as control_vec:
             a_np = control_vec.array
 
         import numpy as np
 
         self.parameters["xmin"] = self.lb
         self.parameters["xmax"] = self.ub
+        self.parameters["n"] = control_function.function_space().dim()
         itermax = self.parameters["maximum_iterations"]
 
         # Create an optimizer client
