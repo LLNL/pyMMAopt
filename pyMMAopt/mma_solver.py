@@ -1,8 +1,10 @@
 # from fenics_adjoint import *
+from pyadjoint.adjfloat import AdjFloat
 from pyadjoint.reduced_functional_numpy import ReducedFunctionalNumPy
 from pyadjoint.optimization.optimization_solver import OptimizationSolver
 from pyadjoint.reduced_functional_numpy import gather
-from firedrake import PETSc
+from firedrake import PETSc, Function
+from ufl.constant import Constant
 
 try:
     from .mma import MMAClient
@@ -78,12 +80,19 @@ class MMASolver(OptimizationSolver):
         """Build the pyipopt problem from the OptimizationProblem instance."""
 
         self.rfn = ReducedFunctionalNumPy(self.problem.reduced_functional)
-        ncontrols = len(self.rfn.get_controls()) # TODO All gather called here, replaced with an AllReduce
+        assert len(self.rfn.controls) == 1, "Only one control is possible for MMA"
+        assert isinstance(
+            self.rfn.controls[0].control, Function
+        ), "Only control of type Function is possible for MMA"
+        control = self.rfn.controls[0]
+        n_local_control = len(
+            control.control.dat.data_ro
+        )  # There is another function: dat.data_ro_with_halos (might be useful)
 
         (self.lb, self.ub) = self.__get_bounds()
         (nconstraints, self.fun_g, self.jac_g) = self.__get_constraints()
 
-        self.n = ncontrols
+        self.n = n_local_control
         self.m = nconstraints
         # if isinstance(self.problem, MaximizationProblem):
         # multiply objective function by -1 internally in
@@ -103,19 +112,32 @@ class MMASolver(OptimizationSolver):
             for (bound, control) in zip(bounds, self.rfn.controls):
                 general_lb, general_ub = bound  # could be float, Constant, or Function
 
-                if isinstance(general_lb, (float, int)):
-                    len_control = len(self.rfn.get_global(control)) # TODO All gather called here, replaced with an AllReduce, probably factor out the len_control
-                    lb = numpy.array([float(general_lb)] * len_control)
+                if isinstance(control.control, Function):
+                    n_local_control = len(
+                        control.control.dat.data_ro
+                    )  # There is another function: dat.data_ro_with_halos (might be useful)
+                elif isinstance(control.control, Constant) or isinstance(
+                    control.control, AdjFloat
+                ):
+                    n_local_control = 1
                 else:
-                    lb = self.rfn.get_global(general_lb)# TODO All gather called here, replaced with an AllReduce
+                    raise TypeError(
+                        f"Type of control: {type(control.control)} not supported by pyMMAopt"
+                    )
+
+                if isinstance(general_lb, (float, int)):
+                    lb = numpy.array([float(general_lb)] * n_local_control)
+                else:
+                    with general_lb.dat.vec_ro as lb_v:
+                        lb = lb_v.array
 
                 lb_list.append(lb)
 
                 if isinstance(general_ub, (float, int)):
-                    len_control = len(self.rfn.get_global(control))# TODO All gather called here, replaced with an AllReduce, probably factor out the len_control
-                    ub = numpy.array([float(general_ub)] * len_control)
+                    ub = numpy.array([float(general_ub)] * n_local_control)
                 else:
-                    ub = self.rfn.get_global(general_ub)
+                    with general_ub.dat.vec_ro as ub_v:
+                        ub = ub_v.array
 
                 ub_list.append(ub)
 
@@ -160,8 +182,6 @@ class MMASolver(OptimizationSolver):
         else:
             # The length of the constraint vector
             nconstraints = constraint._get_constraint_dim()
-            ncontrols = len(self.rfn.get_controls())# TODO All gather called here, replaced with an AllReduce, probably factor out the len_control
-
             # The constraint function
             def fun_g(x, user_data=None):
                 out = numpy.array(constraint.function(x), dtype=float)
@@ -183,7 +203,8 @@ class MMASolver(OptimizationSolver):
         tol = self.parameters["tol"]
         accepted_tol = self.parameters["accepted_tol"]
         # Initial estimation
-        a_np = self.rfn.get_controls() # TODO get_controls involves an allgather of the vector.
+        with self.rfn.controls[0].control.dat.vec_ro as control_vec:
+            a_np = control_vec.array
 
         import numpy as np
 
@@ -202,18 +223,20 @@ class MMASolver(OptimizationSolver):
 
         change_arr = []
 
+        dg0dx = np.empty([self.m, self.n])
         while change > tol and loop <= itermax:
             f0val = self.rfn(a_np)
             df0dx = self.rfn.derivative(a_np)
 
             g0val = -1.0 * self.fun_g(a_np)
-            j = self.jac_g(a_np)
-            dg0dx = -1.0 * numpy.array(gather(j), dtype=float) # TODO, another gather that is not necessary (I believe)
-            dg0dx = numpy.reshape(dg0dx, [self.m, self.n])
+            jac = self.jac_g(a_np)
+            for j, jac_j in enumerate(jac):
+                with jac_j[0].dat.vec_ro as jac_vec:
+                    dg0dx[j, :] = -1.0 * jac_vec.array
 
             # move limits
-            clientOpt.xmin = np.maximum(self.lb, a_np - clientOpt.move) # TODO, All reduce on maximum
-            clientOpt.xmax = np.minimum(self.ub, a_np + clientOpt.move) # TODO, All reduce on minimum
+            clientOpt.xmin = np.maximum(self.lb, a_np - clientOpt.move)
+            clientOpt.xmax = np.minimum(self.ub, a_np + clientOpt.move)
 
             xmma, y, z, lam, xsi, eta, mu, zet, s, low, upp, factor = clientOpt.mma(
                 a_np, xold1, xold2, low, upp, f0val, g0val, df0dx, dg0dx, loop
@@ -227,7 +250,9 @@ class MMASolver(OptimizationSolver):
             loop = loop + 1
 
             PETSc.Sys.Print("It: {it}, obj: {obj} ".format(it=loop, obj=f0val), end="")
-            PETSc.Sys.Print(*(map("g[{0[0]}]: {0[1][0]} ".format, enumerate(g0val))), end="")
+            PETSc.Sys.Print(
+                *(map("g[{0[0]}]: {0[1][0]} ".format, enumerate(g0val))), end=""
+            )
             PETSc.Sys.Print(" change: {:.3f}".format(change))
 
             change_arr.append(change)
