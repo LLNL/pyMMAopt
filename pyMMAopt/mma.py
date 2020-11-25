@@ -19,6 +19,10 @@ import numpy as np
 import numexpr as ne
 from scipy.sparse import spdiags
 import time
+from firedrake.petsc import PETSc
+
+print = lambda x: PETSc.Sys.Print(x)
+
 
 class MMAClient(object):
 
@@ -108,7 +112,7 @@ class MMAClient(object):
         # create the attributes
         for (prop, default) in param_defaults.items():
             setattr(self, prop, parameters.get(prop,default))
-        self.n = len(self.xmin)
+        self.n = len(self.xmin) # TODO All reduce here?
         self.xmin = np.array(self.xmin)
         self.xmax = np.array(self.xmax)
 
@@ -185,7 +189,7 @@ class MMAClient(object):
         qlam = q0 + np.dot(Q.T,lam)
         gvec = P.dot(uxinv1) + Q.dot(xlinv1)
         dpsidx = plam / ux2 - qlam / xl2
-        residu = np.empty(shape=(3*self.n + 4*self.m + 2,), dtype=float)
+        residu = np.empty(shape=(3*self.n + 4*self.m + 2,), dtype=float) # TODO Probably the best will be to isolate the components into parallel and serial
         #rex
         ind0=0;ind1 = self.n
         residu[ind0:ind1] = dpsidx - xsi + eta
@@ -229,13 +233,14 @@ class MMAClient(object):
         uxinv2 = 1. / ux2; xlinv2 = 1. / xl2
         plam = p0 + lam.dot(P)
         qlam = q0 + lam.dot(Q)
-        gvec = P.dot(uxinv1) + Q.dot(xlinv1)
+        gvec = P.dot(uxinv1) + Q.dot(xlinv1) # TODO All reduce in here
         GG = uxinv2*P - xlinv2*Q
         dpsidx = plam*uxinv2 - qlam * xlinv2
         delx = dpsidx - epsi*invxalpha + epsi*invxbeta
         diagx = plam / ux3 + qlam / xl3
         diagx = 2*diagx + xsi*invxalpha + eta*invxbeta
         diagxinv = 1. / diagx
+
         dely = self.c + self.d * y - lam - epsi / y
         delz = self.a0 - np.dot(self.a,lam) - epsi/z
         dellam = gvec - self.a*z - y - b + epsi / lam
@@ -253,7 +258,7 @@ class MMAClient(object):
                     a'    -zet/z ]
         """
         if self._timing: t0 = time.time()
-        Alam = np.dot(diagxinvGG,GG.T)
+        Alam = np.dot(diagxinvGG,GG.T) # TODO What kind of operation is this? Probably a dot product
         mm = range(0,self.m)
         Alam[mm,mm] += diaglamyi
         jac = np.empty(shape=(self.m+1, self.m+1), dtype=float)
@@ -289,7 +294,7 @@ class MMAClient(object):
     def RHSdual(self,dellam,delx,dely,delz,diagxinvGG,diagy,GG):
         if self._timing: t0 = time.time()
         rhs = np.empty(shape=(self.m+1,), dtype=float)
-        rhs[0:self.m] = dellam + dely/diagy - diagxinvGG.dot(delx)
+        rhs[0:self.m] = dellam + dely/diagy - diagxinvGG.dot(delx) # TODO Probably another all reduce here...
         rhs[self.m] = delz
         if self._timing: self._elapsedTime['RHSdual'] = time.time() - t0
         return rhs
@@ -299,7 +304,7 @@ class MMAClient(object):
         rhs = np.empty(shape=(self.n+1,), dtype=float)
         rhs[0:self.n] = -(delx + np.dot(np.transpose(GG), dellamyi_diaglamyi))
         rhs[self.n] = -(delz - np.dot(self.a,dellamyi_diaglamyi))
-        if self._timing: self._elapsedTime['JacDual'] = time.time() - t0
+        if self._timing: self._elapsedTime['RHSprim'] = time.time() - t0
         return rhs
 
     def getNewPoint(self,xold,yold,zold,lamold,xsiold,etaold,muold,zetold,sold,
@@ -332,12 +337,15 @@ class MMAClient(object):
             Input:  m, n, low, upp, alfa, beta, p0, q0, P, Q, a0, a, b, c, d.
             Output: xmma,ymma,zmma, slack variables and Lagrange multiplers.
         """
+        # Initialize the variable values
         epsi = 1;x = 0.5*(alfa+beta);y = np.ones([self.m]);z = 1
         lam = np.ones([self.m]);xsi=1./(x-alfa)
         xsi=np.maximum(xsi,np.ones([self.n]))
         eta = np.maximum(1./(beta-x),np.ones([self.n]))
         mu  = np.maximum(np.ones([self.m]),0.5*self.c)
         zet = 1;s = np.ones([self.m]);epsiIt = 1
+
+
         if self.IP > 0: print(str('*'*80))
         if self._timing:
             self._elapsedTime['nlIterPerEpsilon']=[];
@@ -351,8 +359,8 @@ class MMAClient(object):
             # compute residual
             residu = self.resKKT(alfa,beta,low,upp,p0,q0,P,Q,b,x,y,z,
                                  lam,xsi,eta,mu,zet,s,epsi)
-            residuNorm = np.linalg.norm(residu,2)
-            residuMax = np.linalg.norm(residu,np.inf)
+            residuNorm = np.linalg.norm(residu,2) # TODO All reduce here
+            residuMax = np.linalg.norm(residu,np.inf) # TODO All reduce here
 
             # Solve the NL KKT problem for a given epsilon
             it_NL = 1;relaxloopEpsi = []
@@ -367,7 +375,7 @@ class MMAClient(object):
 
                 # assemble and solve the system: dlam or dx
                 if self.m < self.n:
-                    diagxinvGG = diagxinv*GG
+                    diagxinvGG = diagxinv*GG # TODO What kind of operation is this?
                     AA = self.JacDual(diagxinvGG,diaglamyi,GG,z,zet)
                     bb = self.RHSdual(dellam,delx,dely,delz,diagxinvGG,diagy,GG)
                     if self._timing:t0Solve = time.time()
@@ -376,7 +384,7 @@ class MMAClient(object):
                     dlam = solut[0:self.m]
                     dz = solut[self.m]
                     #dx2 = - delx*diagxinv - np.transpose(GG).dot(dlam)/diagx
-                    dx = - delx*diagxinv - np.dot((diagxinv*GG).T,dlam)
+                    dx = - delx*diagxinv - np.dot((diagxinv*GG).T,dlam) # TODO What kind of operation is this?
                 else:
                     AA = self.JacPrim(diaglamyi,diagx,GG,z,zet)
                     dellamyi = dellam + dely/diagy
@@ -403,17 +411,19 @@ class MMAClient(object):
                 muold = np.copy(mu);zetold = np.copy(zet);sold = np.copy(s)
 
                 # relaxation of the newton step for staying in feasible region
-                xx = [tt for sub in [y,[z],lam,xsi,eta,mu,[zet],s] for tt in sub]
-                xx = np.array(xx)
-                dxx =[tt for sub in [dy,[dz],dlam,dxsi,deta,dmu,[dzet],ds] for tt in sub]
+                len_xx = self.n * 2 + self.m * 4 + 2
+                xx = np.zeros(len_xx)
+                np.concatenate((y, [z], lam, xsi, eta, mu, [zet], s), out=xx)
+                dxx = np.zeros(len_xx)
+                np.concatenate((dy, [dz], dlam, dxsi, deta, dmu, [dzet], ds), out=dxx)
 
-                dxx = np.array(dxx)
+
                 stepxx = -1.01*dxx/xx
-                stmxx  = np.max(stepxx)
+                stmxx  = np.max(stepxx) # TODO All reduce
                 stepalfa = -1.01*dx/(x-alfa)
-                stmalfa = np.max(stepalfa)
+                stmalfa = np.max(stepalfa) # TODO All reduce
                 stepbeta = 1.01*dx/(beta-x)
-                stmbeta = np.max(stepbeta)
+                stmbeta = np.max(stepbeta) # TODO All reduce
                 stmalbe  = np.maximum(stmalfa,stmbeta)
                 stmalbexx = np.maximum(stmalbe,stmxx)
                 stminv = np.maximum(stmalbexx,1.)
@@ -444,7 +454,7 @@ class MMAClient(object):
                 self.iPrint(['relax. it.','Norm(res)','step'],[itto,resinewNorm,steg],2)
 
                 residuNorm = resinewNorm
-                residuMax = np.linalg.norm(residu,np.inf)
+                residuMax = np.linalg.norm(residu,np.inf) # TODO All reduce
                 steg *= 2.0
                 it_NL += 1
             if self._timing:
@@ -525,7 +535,7 @@ class MMAClient(object):
         Q = xl2*(Q + PQ)
         ux1inv = 1./ux1
         xl1inv = 1./xl1
-        b = np.dot(P,ux1inv) + np.dot(Q,xl1inv) - fval.T
+        b = np.dot(P,ux1inv) + np.dot(Q,xl1inv) - fval.T # TODO All reduce here
         if self._timing:self._elapsedTime['mmasub']['mmasubMat']=time.time()-t0
 
         return p0,q0,P,Q,b

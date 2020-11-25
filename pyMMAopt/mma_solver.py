@@ -78,7 +78,7 @@ class MMASolver(OptimizationSolver):
         """Build the pyipopt problem from the OptimizationProblem instance."""
 
         self.rfn = ReducedFunctionalNumPy(self.problem.reduced_functional)
-        ncontrols = len(self.rfn.get_controls())
+        ncontrols = len(self.rfn.get_controls()) # TODO All gather called here, replaced with an AllReduce
 
         (self.lb, self.ub) = self.__get_bounds()
         (nconstraints, self.fun_g, self.jac_g) = self.__get_constraints()
@@ -104,15 +104,15 @@ class MMASolver(OptimizationSolver):
                 general_lb, general_ub = bound  # could be float, Constant, or Function
 
                 if isinstance(general_lb, (float, int)):
-                    len_control = len(self.rfn.get_global(control))
+                    len_control = len(self.rfn.get_global(control)) # TODO All gather called here, replaced with an AllReduce, probably factor out the len_control
                     lb = numpy.array([float(general_lb)] * len_control)
                 else:
-                    lb = self.rfn.get_global(general_lb)
+                    lb = self.rfn.get_global(general_lb)# TODO All gather called here, replaced with an AllReduce
 
                 lb_list.append(lb)
 
                 if isinstance(general_ub, (float, int)):
-                    len_control = len(self.rfn.get_global(control))
+                    len_control = len(self.rfn.get_global(control))# TODO All gather called here, replaced with an AllReduce, probably factor out the len_control
                     ub = numpy.array([float(general_ub)] * len_control)
                 else:
                     ub = self.rfn.get_global(general_ub)
@@ -160,7 +160,7 @@ class MMASolver(OptimizationSolver):
         else:
             # The length of the constraint vector
             nconstraints = constraint._get_constraint_dim()
-            ncontrols = len(self.rfn.get_controls())
+            ncontrols = len(self.rfn.get_controls())# TODO All gather called here, replaced with an AllReduce, probably factor out the len_control
 
             # The constraint function
             def fun_g(x, user_data=None):
@@ -183,7 +183,7 @@ class MMASolver(OptimizationSolver):
         tol = self.parameters["tol"]
         accepted_tol = self.parameters["accepted_tol"]
         # Initial estimation
-        a_np = self.rfn.get_controls()
+        a_np = self.rfn.get_controls() # TODO get_controls involves an allgather of the vector.
 
         import numpy as np
 
@@ -208,12 +208,12 @@ class MMASolver(OptimizationSolver):
 
             g0val = -1.0 * self.fun_g(a_np)
             j = self.jac_g(a_np)
-            dg0dx = -1.0 * numpy.array(gather(j), dtype=float)
+            dg0dx = -1.0 * numpy.array(gather(j), dtype=float) # TODO, another gather that is not necessary (I believe)
             dg0dx = numpy.reshape(dg0dx, [self.m, self.n])
 
             # move limits
-            clientOpt.xmin = np.maximum(self.lb, a_np - clientOpt.move)
-            clientOpt.xmax = np.minimum(self.ub, a_np + clientOpt.move)
+            clientOpt.xmin = np.maximum(self.lb, a_np - clientOpt.move) # TODO, All reduce on maximum
+            clientOpt.xmax = np.minimum(self.ub, a_np + clientOpt.move) # TODO, All reduce on minimum
 
             xmma, y, z, lam, xsi, eta, mu, zet, s, low, upp, factor = clientOpt.mma(
                 a_np, xold1, xold2, low, upp, f0val, g0val, df0dx, dg0dx, loop
