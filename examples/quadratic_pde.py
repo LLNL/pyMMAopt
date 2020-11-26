@@ -1,38 +1,35 @@
 from firedrake import *
+from firedrake.petsc import PETSc
 from firedrake_adjoint import *
 from pyMMAopt import MMASolver
-from firedrake import PETSc
-import petsc4py
-
-
-petsc4py.PETSc.Sys.popErrorHandler()
-comm = PETSc.COMM_WORLD
 
 print = lambda x: PETSc.Sys.Print(x, comm=COMM_SELF)
 
-mesh = UnitSquareMesh(4, 4)
-print(f"rank: {mesh.comm.rank}")
-DG = FunctionSpace(mesh, "DG", 0)
-print(f"size DG: {DG.dim()}")
+import numpy as np
+import argparse
+
+
+parser = argparse.ArgumentParser(description="Simple optimization problem")
+parser.add_argument(
+    "--n_vars",
+    action="store",
+    dest="n_vars",
+    type=int,
+    help="Number of design variables",
+    default=100,
+)
+args = parser.parse_args()
+n_vars = args.n_vars
+grid_resol = int(np.sqrt(n_vars))
+
+
+mesh = UnitSquareMesh(grid_resol, grid_resol)
+DG = FunctionSpace(mesh, 'DG', 0)
 x, y = SpatialCoordinate(mesh)
 rho = interpolate(x ** 2 * y ** 3, DG)
 
-controls_f = File("design.pvd")
-gradient_f = File("gradient.pvd")
-rho_viz = Function(DG)
-grad_viz = Function(DG)
-
-
-def deriv_cb(j, dj, rho):
-    with stop_annotating():
-        rho_viz.assign(rho)
-        controls_f.write(rho_viz)
-        grad_viz.assign(dj)
-        gradient_f.write(grad_viz)
-
-
-J = assemble(Constant(1e4) * rho * rho * dx)
-G = assemble(rho * dx)
+J = assemble(Constant(1e4)*rho*rho*dx)
+G = assemble(rho*dx)
 m = Control(rho)
 Jhat = ReducedFunctional(J, m)
 Ghat = ReducedFunctional(G, m)
@@ -80,7 +77,7 @@ problem = MinimizationProblem(
 
 parameters_mma = {
     "move": 0.1,
-    "maximum_iterations": 50,
+    "maximum_iterations": 3,
     "m": 1,
     "IP": 0,
     "tol": 1e-7,
