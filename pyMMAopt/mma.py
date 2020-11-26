@@ -746,8 +746,9 @@ class MMAClient(object):
         Q = xl2 * (Q + PQ)
         ux1inv = 1.0 / ux1
         xl1inv = 1.0 / xl1
-        local_b = np.dot(P, ux1inv) + np.dot(Q, xl1inv) - fval.T
-        b = self.comm.allreduce(local_b, op=MPI.SUM)
+        local_b = np.dot(P, ux1inv) + np.dot(Q, xl1inv)
+        b = self.comm.allreduce(local_b, op=MPI.SUM) - fval.T
+
         if self._timing:
             self._elapsedTime["mmasub"]["mmasubMat"] = time.time() - t0
 
