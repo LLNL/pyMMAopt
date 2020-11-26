@@ -21,9 +21,10 @@ from scipy.sparse import spdiags
 import time
 from firedrake.petsc import PETSc
 from mpi4py import MPI
+from firedrake import COMM_SELF
 
 
-print = lambda x: PETSc.Sys.Print(x)
+print = lambda x: PETSc.Sys.Print(x, comm=COMM_SELF)
 
 
 class MMAClient(object):
