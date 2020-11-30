@@ -3,9 +3,16 @@ from pyadjoint.adjfloat import AdjFloat
 from pyadjoint.reduced_functional_numpy import ReducedFunctionalNumPy
 from pyadjoint.optimization.optimization_solver import OptimizationSolver
 from pyadjoint.reduced_functional_numpy import gather
-from firedrake import PETSc, Function
+from firedrake import (
+    PETSc,
+    Function,
+    assemble,
+    dx,
+    TrialFunction,
+    TestFunction,
+    Constant,
+)
 from firedrake import COMM_SELF
-from ufl.constant import Constant
 from codetiming import Timer
 from mpi4py import MPI
 
@@ -23,6 +30,31 @@ print = lambda x: PETSc.Sys.Print(x, comm=COMM_SELF)
 class MMASolver(OptimizationSolver):
     def __init__(self, problem, parameters=None):
         OptimizationSolver.__init__(self, problem, parameters)
+
+        self.rf = self.problem.reduced_functional
+        if len(self.rf.controls) > 1:
+            raise RuntimeError("Only one control is possible for MMA")
+
+        if isinstance(self.rf.controls[0].control, Function) is False:
+            raise RuntimeError("Only control of type Function is possible for MMA")
+
+        control_funcspace = self.rf.controls[0].control.function_space()
+        control_elem = control_funcspace.ufl_element()
+        if (
+            control_elem.family() != "Discontinuous Lagrange"
+            or control_elem.degree() != 0
+        ):
+            raise RuntimeError(
+                "Only zero degree Discontinuous Galerkin function space is supported"
+            )
+
+        if parameters.get("norm") == "L2":
+            self.Mdiag = assemble(
+                TrialFunction(control_funcspace) * TestFunction(control_funcspace) * dx,
+                diagonal=True,
+            ).dat.data_ro
+        else:
+            self.Mdiag = numpy.ones(len(self.rf.controls[0].control.dat.data_ro))
 
         self.__build_mma_problem()
         self.__set_parameters()
@@ -217,6 +249,7 @@ class MMASolver(OptimizationSolver):
         self.parameters["xmin"] = self.lb
         self.parameters["xmax"] = self.ub
         self.parameters["n"] = control_function.function_space().dim()
+        self.parameters["Mdiag"] = self.Mdiag
         itermax = self.parameters["maximum_iterations"]
 
         # Create an optimizer client

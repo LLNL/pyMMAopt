@@ -88,6 +88,7 @@ class MMAClient(object):
             "c": [],
             "d": [],
             "IP": 0,
+            "Mdiag": None,
             "_timing": 1,
             "_elapsedTime": {
                 "resKKT": -1,
@@ -219,6 +220,7 @@ class MMAClient(object):
         s,
         epsi,
     ):
+        Mdiag = self.Mdiag
         if self._timing:
             t0 = time.time()
         ux1 = upp - x
@@ -244,8 +246,14 @@ class MMAClient(object):
             return residuMax
 
         # rex
-        local_residu_x = dpsidx - xsi + eta
-        residu_x_norm = global_res_norm_square(local_residu_x)
+        local_residu_x = ne.evaluate(
+            "dpsidx - Mdiag*xsi + Mdiag*eta"
+        )  # TODO weight the xsi and eta with the mass matrix
+        residu_x_norm = global_res_norm_square(
+            local_residu_x
+        )  # This components is in the dual space, the norm has
+        # to be weighted b the inverse of the mass matrix a.T * M^{-1} * a
+        # do a sqrt if you're going to do **2 later
         residu_x_max = global_residual_max(local_residu_x)
         # rey
         residu_y = self.c + self.d * y - mu - lam
@@ -260,11 +268,15 @@ class MMAClient(object):
         residu_lam_norm = np.sum(residu_lam ** 2)
         residu_lam_max = np.linalg.norm(residu_lam, np.inf)
         # rexsi
-        local_residu_xsi = xsi * (x - alfa) - epsi
+        local_residu_xsi = ne.evaluate(
+            "xsi * (x - alfa) - epsi"
+        )  # TODO weight by sqrt of mass matrix
         residu_xsi_norm = global_res_norm_square(local_residu_xsi)
         residu_xsi_max = global_residual_max(local_residu_xsi)
         # reeta
-        local_residu_eta = eta * (beta - x) - epsi
+        local_residu_eta = ne.evaluate(
+            "eta * (beta - x) - epsi"
+        )  # TODO weight by sqrt of mass matrix
         residu_eta_norm = global_res_norm_square(local_residu_eta)
         residu_eta_max = global_residual_max(local_residu_eta)
         # remu
