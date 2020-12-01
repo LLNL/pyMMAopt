@@ -247,10 +247,10 @@ class MMAClient(object):
 
         # rex
         local_residu_x = ne.evaluate(
-            "dpsidx - Mdiag*xsi + Mdiag*eta"
+            "(dpsidx - Mdiag*xsi + Mdiag*eta)"
         )  # TODO weight the xsi and eta with the mass matrix
         residu_x_norm = global_res_norm_square(
-            local_residu_x
+            ne.evaluate("local_residu_x / sqrt(Mdiag)")
         )  # This components is in the dual space, the norm has
         # to be weighted b the inverse of the mass matrix a.T * M^{-1} * a
         # do a sqrt if you're going to do **2 later
@@ -268,15 +268,11 @@ class MMAClient(object):
         residu_lam_norm = np.sum(residu_lam ** 2)
         residu_lam_max = np.linalg.norm(residu_lam, np.inf)
         # rexsi
-        local_residu_xsi = ne.evaluate(
-            "xsi * (x - alfa) - epsi"
-        )  # TODO weight by sqrt of mass matrix
+        local_residu_xsi = ne.evaluate("(xsi * (x - alfa) - epsi) * sqrt(Mdiag)")
         residu_xsi_norm = global_res_norm_square(local_residu_xsi)
         residu_xsi_max = global_residual_max(local_residu_xsi)
         # reeta
-        local_residu_eta = ne.evaluate(
-            "eta * (beta - x) - epsi"
-        )  # TODO weight by sqrt of mass matrix
+        local_residu_eta = ne.evaluate("(eta * (beta - x) - epsi)* sqrt(Mdiag)")
         residu_eta_norm = global_res_norm_square(local_residu_eta)
         residu_eta_max = global_residual_max(local_residu_eta)
         # remu
@@ -346,12 +342,13 @@ class MMAClient(object):
         gvec = self.comm.allreduce(local_gvec, op=MPI.SUM)
         GG = ne.evaluate("uxinv2 * P - xlinv2 * Q")
         dpsidx = ne.evaluate("plam * uxinv2 - qlam * xlinv2")
+        Mdiag = self.Mdiag
         delx = ne.evaluate(
-            "dpsidx - epsi * invxalpha + epsi * invxbeta"
+            "dpsidx - Mdiag * epsi * invxalpha + Mdiag * epsi * invxbeta"
         )  # TODO mass matrix for xsi and eta
         diagx = ne.evaluate("plam / ux3 + qlam / xl3")
         diagx = ne.evaluate(
-            "2 * diagx + xsi * invxalpha + eta * invxbeta"
+            "2 * diagx + Mdiag * xsi * invxalpha + Mdiag * eta * invxbeta"
         )  # TODO mass matrix for xsi and eta
         diagxinv = 1.0 / diagx
 
@@ -504,7 +501,7 @@ class MMAClient(object):
             # Solve the NL KKT problem for a given epsilon
             it_NL = 1
             relaxloopEpsi = []
-            while residuMax > 0.9 * epsi and it_NL < 200:
+            while residuNorm > 0.8 * epsi and it_NL < 200:
                 self.iPrint(
                     ["NL it.", "Norm(res)", "Max(|res|)"],
                     [it_NL, residuNorm, residuMax],
@@ -563,11 +560,11 @@ class MMAClient(object):
                     )
                 dy = -dely / diagy + dlam / diagy
                 dxsi = ne.evaluate(
-                    "-xsi + epsi / (x - alfa) - (xsi * dx) / (x - alfa)"
-                )  # TODO mass matrix for the term weighted with epsi
+                    "-xsi +  epsi / (x - alfa) - (xsi * dx) / (x - alfa)"
+                )
                 deta = ne.evaluate(
-                    "-eta + epsi / (beta - x) + (eta * dx) / (beta - x)"
-                )  # TODO mass matrix for the term weighted with epsi
+                    "-eta +  epsi / (beta - x) + (eta * dx) / (beta - x)"
+                )
                 dmu = -mu + epsi / y - (mu * dy) / y
                 dzet = -zet + epsi / z - zet * dz / z
                 ds = -s + epsi / lam - (s * dlam) / lam
@@ -593,13 +590,13 @@ class MMAClient(object):
                 np.concatenate((dy, [dz], dlam, dxsi, deta, dmu, [dzet], ds), out=dxx)
 
                 stepxx = ne.evaluate("-1.01 * dxx / xx")
-                local_stmxx = np.max(stepxx)  # TODO All reduce
+                local_stmxx = np.max(stepxx)
                 stmxx = self.comm.allreduce(local_stmxx, op=MPI.MAX)
                 stepalfa = ne.evaluate("-1.01 * dx / (x - alfa)")
-                local_stmalfa = np.max(stepalfa)  # TODO All reduce
+                local_stmalfa = np.max(stepalfa)
                 stmalfa = self.comm.allreduce(local_stmalfa, op=MPI.MAX)
                 stepbeta = ne.evaluate("1.01 * dx / (beta - x)")
-                local_stmbeta = np.max(stepbeta)  # TODO All reduce
+                local_stmbeta = np.max(stepbeta)
                 stmbeta = self.comm.allreduce(local_stmbeta, op=MPI.MAX)
                 stmalbe = np.maximum(stmalfa, stmbeta)
                 stmalbexx = np.maximum(stmalbe, stmxx)
@@ -608,7 +605,7 @@ class MMAClient(object):
                 itto = 1
                 resinewNorm = 2 * residuNorm
                 resinewMax = 1e10
-                while resinewNorm > residuNorm and itto < 50:
+                while resinewNorm > residuNorm and itto < 200:
                     if self._timing:
                         t0_relax = time.time()
                     self.iPrint(
@@ -743,6 +740,7 @@ class MMAClient(object):
         """
         if self._timing:
             t0 = time.time()
+
         xmami = self.xmax - self.xmin
         xmamieps = np.array([0.00001 * self.local_n])
         xmami = np.maximum(xmami, xmamieps)
@@ -753,7 +751,7 @@ class MMAClient(object):
         xl2 = xl1 * xl1
         p0 = np.maximum(df0dx, 0)
         q0 = np.maximum(-df0dx, 0)
-        pq0 = 0.001 * (p0 + q0) + self.raa0 * xmamiinv
+        pq0 = 0.001 * (p0 + q0) + self.raa0 * xmamiinv * self.Mdiag
         p0 = p0 + pq0
         q0 = q0 + pq0
         p0 = p0 * ux2
@@ -762,7 +760,8 @@ class MMAClient(object):
         P = np.maximum(dfdx, 0)
         Q = np.maximum(-dfdx, 0)
         PQ = (
-            0.001 * (P + Q) + self.raa0 * np.ones([self.m, 1]) * xmamiinv[np.newaxis, :]
+            0.001 * (P + Q)
+            + self.Mdiag * self.raa0 * np.ones([self.m, 1]) * xmamiinv[np.newaxis, :]
         )
         P = ne.evaluate("ux2 * (P + PQ)")
         Q = ne.evaluate("xl2 * (Q + PQ)")

@@ -87,6 +87,7 @@ class MMASolver(OptimizationSolver):
             "d": [],
             "IP": 0,
             "_timing": 1,
+            "norm": "l2",
             "_elapsedTime": {
                 "resKKT": -1,
                 "preCompute": -1,
