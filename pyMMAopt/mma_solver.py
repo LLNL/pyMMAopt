@@ -13,7 +13,6 @@ from firedrake import (
     Constant,
 )
 from firedrake import COMM_SELF
-from codetiming import Timer
 from mpi4py import MPI
 
 try:
@@ -288,7 +287,6 @@ class MMASolver(OptimizationSolver):
             clientOpt.xmin = np.maximum(self.lb, a_np - clientOpt.move)
             clientOpt.xmax = np.minimum(self.ub, a_np + clientOpt.move)
 
-            # with Timer(text="Time per MMA iteration: {milliseconds:.0f} ms"):
             xmma, y, z, lam, xsi, eta, mu, zet, s, low, upp, factor = clientOpt.mma(
                 a_np, xold1, xold2, low, upp, f0val, g0val, df0dx, dg0dx, loop
             )
