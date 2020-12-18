@@ -39,13 +39,22 @@ class MMASolver(OptimizationSolver):
 
         control_funcspace = self.rf.controls[0].control.function_space()
         control_elem = control_funcspace.ufl_element()
-        if (
-            control_elem.family() != "Discontinuous Lagrange"
-            or control_elem.degree() != 0
-        ):
-            raise RuntimeError(
-                "Only zero degree Discontinuous Galerkin function space is supported"
-            )
+
+        if (control_elem.family() == "TensorProductElement"):
+            sub_elem = control_elem.sub_elements()
+            if (sub_elem[0].family() != 'DQ' or sub_elem[0].degree() != 0 or
+                    sub_elem[1].family() != "Discontinuous Lagrange" or sub_elem[1].degree() !=0):
+                raise RuntimeError(
+                    "Only zero degree Discontinuous Galerkin function space for extruded elements is supported"
+                )
+        else:
+            if (
+                control_elem.family() != "Discontinuous Lagrange"
+                or control_elem.degree() != 0
+            ):
+                raise RuntimeError(
+                    "Only zero degree Discontinuous Galerkin function space is supported"
+                )
 
         if parameters.get("norm") == "L2":
             self.Mdiag = assemble(
