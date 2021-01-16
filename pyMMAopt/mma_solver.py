@@ -40,10 +40,14 @@ class MMASolver(OptimizationSolver):
         control_funcspace = self.rf.controls[0].control.function_space()
         control_elem = control_funcspace.ufl_element()
 
-        if (control_elem.family() == "TensorProductElement"):
+        if control_elem.family() == "TensorProductElement":
             sub_elem = control_elem.sub_elements()
-            if (sub_elem[0].family() not in ['DQ', 'Discontinuous Lagrange'] or sub_elem[0].degree() != 0 or
-                    sub_elem[1].family() != "Discontinuous Lagrange" or sub_elem[1].degree() !=0):
+            if (
+                sub_elem[0].family() not in ["DQ", "Discontinuous Lagrange"]
+                or sub_elem[0].degree() != 0
+                or sub_elem[1].family() != "Discontinuous Lagrange"
+                or sub_elem[1].degree() != 0
+            ):
                 raise RuntimeError(
                     "Only zero degree Discontinuous Galerkin function space for extruded elements is supported"
                 )
@@ -274,20 +278,33 @@ class MMASolver(OptimizationSolver):
 
         a_function = control_function.copy(deepcopy=True)
 
+        def eval_f(a_np):
+            with a_function.dat.vec as a_vec:
+                a_vec.array_w = a_np
+            f0val = self.rf(a_function)
+            return f0val
+
+        def eval_g(a_np):
+            with a_function.dat.vec as a_vec:
+                a_vec.array_w = a_np
+            return -1.0 * self.fun_g(a_function)
+
         dg0dx = np.empty([self.m, self.n])
         df0dx = np.empty([self.n])
         comm = MPI.COMM_WORLD
         rank = comm.Get_rank()
         while change > tol and loop <= itermax:
-            with a_function.dat.vec as a_vec:
-                a_vec.array_w = a_np
-            f0val = self.rf(a_function)
+            # Cost functions
+            f0val = eval_f(a_np)
+            g0val = eval_g(a_np)
+
+            # Gradients
             df0dx_func = self.rf.derivative()
+            jac = self.jac_g(a_function)
+
+            # Copy into the numpy arrays
             with df0dx_func.dat.vec_ro as df_vec:
                 df0dx[:] = df_vec.array
-
-            g0val = -1.0 * self.fun_g(a_function)
-            jac = self.jac_g(a_function)
             for j, jac_j in enumerate(jac):
                 with jac_j[0].dat.vec_ro as jac_vec:
                     dg0dx[j, :] = -1.0 * jac_vec.array

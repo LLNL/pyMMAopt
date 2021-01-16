@@ -1,20 +1,3 @@
-"""
-    mma.py - Copyright (C) 2016 University of Liege
-
-    This program is free software: you can redistribute it and/or modify
-    it under the terms of the GNU General Public License as published by
-    the Free Software Foundation, either version 3 of the License, or
-    (at your option) any later version.
-
-    This program is distributed in the hope that it will be useful,
-    but WITHOUT ANY WARRANTY; without even the implied warranty of
-    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-    GNU General Public License for more details.
-
-    You should have received a copy of the GNU General Public License
-    along with this program.  If not, see <http://www.gnu.org/licenses/>.
-"""
-
 import numpy as np
 import numexpr as ne
 from scipy.sparse import spdiags
@@ -110,6 +93,9 @@ class MMAClient(object):
         self.xmin = np.array(self.xmin)
         self.xmax = np.array(self.xmax)
         self.comm = MPI.COMM_WORLD
+
+        local_volume = np.sum(self.Mdiag)
+        self.volume = self.comm.allreduce(local_volume, op=MPI.SUM)
 
         # clasical configuration when parameters are unspecified
         if len(self.a) == 0:
@@ -734,7 +720,7 @@ class MMAClient(object):
 
         return alfa, beta, factor
 
-    def mmasubMat(self, xval, low, upp, df0dx, fval, dfdx):
+    def mmasubMat(self, xval, low, upp, f0val, df0dx, fval, dfdx, rho0, rhoi):
         """
         Calculations of p0, q0, P, Q and b.
         """
@@ -742,8 +728,6 @@ class MMAClient(object):
             t0 = time.time()
 
         xmami = self.xmax - self.xmin
-        xmamieps = np.array([0.00001 * self.local_n])
-        xmami = np.maximum(xmami, xmamieps)
         xmamiinv = 1.0 / xmami
         ux1 = upp - xval
         ux2 = ux1 * ux1
@@ -751,7 +735,7 @@ class MMAClient(object):
         xl2 = xl1 * xl1
         p0 = np.maximum(df0dx, 0)
         q0 = np.maximum(-df0dx, 0)
-        pq0 = 0.001 * (p0 + q0) + self.raa0 * xmamiinv * self.Mdiag
+        pq0 = 0.001 * (p0 + q0) + rho0 * xmamiinv * self.Mdiag
         p0 = p0 + pq0
         q0 = q0 + pq0
         p0 = p0 * ux2
@@ -761,22 +745,39 @@ class MMAClient(object):
         Q = np.maximum(-dfdx, 0)
         PQ = (
             0.001 * (P + Q)
-            + self.Mdiag * self.raa0 * np.ones([self.m, 1]) * xmamiinv[np.newaxis, :]
+            + rhoi * np.ones([self.m, 1]) * xmamiinv[np.newaxis, :] * self.Mdiag
         )
         P = ne.evaluate("ux2 * (P + PQ)")
         Q = ne.evaluate("xl2 * (Q + PQ)")
         ux1inv = ne.evaluate("1.0 / ux1")
         xl1inv = ne.evaluate("1.0 / xl1")
+
+        local_b0 = np.dot(p0, ux1inv) + np.dot(q0, xl1inv)
+        b0 = self.comm.allreduce(local_b0, op=MPI.SUM) - f0val
+
         local_b = np.dot(P, ux1inv) + np.dot(Q, xl1inv)
         b = self.comm.allreduce(local_b, op=MPI.SUM) - fval.T
 
         if self._timing:
             self._elapsedTime["mmasub"]["mmasubMat"] = time.time() - t0
 
-        return p0, q0, P, Q, b
+        return p0, q0, P, Q, b0, b
 
     def mmasub(
-        self, xval, xold1, xold2, low, upp, f0val, fval, df0dx, dfdx, iter, factor
+        self,
+        xval,
+        xold1,
+        xold2,
+        low,
+        upp,
+        f0val,
+        fval,
+        df0dx,
+        dfdx,
+        iter,
+        factor,
+        rho0,
+        rhoi,
     ):
         """
         Minimize    f_0(x) + a_0*z + sum( c_i*y_i + 0.5*d_i*(y_i)^2 )
@@ -787,35 +788,144 @@ class MMAClient(object):
         if self._timing:
             t0 = time.time()
 
-        # Calculation of the asymptotes low and upp
-        low, upp = self.moveAsymp(xval, xold1, xold2, low, upp, iter)
-
         # Calculation of the bounds alfa and beta
         alfa, beta, factor = self.moveLim(iter, xval, xold1, xold2, low, upp, factor)
 
         # Calculations of p0, q0, P, Q and b
-        p0, q0, P, Q, b = self.mmasubMat(xval, low, upp, df0dx, fval, dfdx)
+        p0, q0, P, Q, b0, b = self.mmasubMat(
+            xval, low, upp, f0val, df0dx, fval, dfdx, rho0, rhoi
+        )
 
         if self._timing:
             self._elapsedTime["mmasub"]["all"] = time.time() - t0
 
-        return low, upp, alfa, beta, p0, q0, P, Q, b, factor
+        return alfa, beta, p0, q0, P, Q, b0, b, factor
+
+    def calculate_initial_rho(self, dfdx, xmax, xmin):
+        local_rho = np.dot(np.abs(dfdx), xmax - xmin)
+        rho = 0.1 / self.volume * self.comm.allreduce(local_rho, op=MPI.SUM)
+        return rho
+
+    def calculate_rho(self, rho, theta, theta_hat, x_inner, x_outer, low, upp):
+        denom = np.dot(
+            self.Mdiag,
+            (
+                (upp - low)
+                * (x_inner - x_outer) ** 2
+                / ((upp - x_inner) * (x_inner - low) * (self.xmax - self.xmin))
+            ),
+        )
+        delta = (theta - theta_hat) / denom
+
+        if delta > 0:
+            return min(1.1 * (rho + delta), 10.0 * rho)
+        else:
+            return rho
+
+    def convex_approximation(self, x_inner, p, q, b, low, upp):
+        # TODO do we need to add rho?
+        local_fapp = np.sum(p / (upp - x_inner) + q / (x_inner - low))
+        fapp = self.comm.allreduce(local_fapp, op=MPI.SUM) + b
+        return fapp
+
+    def condition_check(self, fapp, new_fval):
+
+        if isinstance(fapp, np.ndarray):
+            assert fapp.size == new_fval.size
+
+        fapp = np.array(fapp)
+        new_fval = np.array(new_fval)
+
+        tolerance = 1e-2
+
+        condition = False
+        for fapp_i, new_fval_i in zip(fapp, new_fval):
+            if fapp_i + tolerance >= new_fval_i:
+                condition = True
+            else:
+                return False
+
+        return condition
 
     def mma(
-        self, xval, xold1, xold2, low, upp, f0val, fval, df0dx, dfdx, iter, factor=[]
+        self,
+        xval,
+        xold1,
+        xold2,
+        low,
+        upp,
+        f0val,
+        fval,
+        df0dx,
+        dfdx,
+        iter,
+        factor=[],
+        eval_f=None,
+        eval_g=None,
     ):
         if self._timing:
             t0 = time.time()
 
-        # generate subproblem
-        low, upp, alfa, beta, p0, q0, P, Q, b, factor = self.mmasub(
-            xval, xold1, xold2, low, upp, f0val, fval, df0dx, dfdx, iter, factor
-        )
+        # Calculation of the asymptotes low and upp
+        low, upp = self.moveAsymp(xval, xold1, xold2, low, upp, iter)
 
-        # solve the subproblem
-        x, y, z, lam, xsi, eta, mu, zet, s = self.subsolvIP(
-            alfa, beta, low, upp, p0, q0, P, Q, b
-        )
+        rho0 = self.calculate_initial_rho(df0dx, self.xmax, self.xmin)
+        rhoi = self.calculate_initial_rho(dfdx, self.xmax, self.xmin)
+
+        ## Outer iteration
+        # - Fix asymptotes
+        # - Initial rho
+        # - Gradients
+
+        ## Inner iterations will:
+        # - Generate the subproblem with the given rho values
+        # - Solve the subproblem
+        # - Calculate the function approximation with the new solution
+        # - Re evaluate the real cost function with the new solution
+        # - Check that the GCMMA condition is satisfied
+        # - Recalculate rho if necessary
+
+        inner_it_max = 100
+        inner_it = 0
+        while inner_it < inner_it_max:
+            # generate subproblem
+            alfa, beta, p0, q0, P, Q, b0, b, factor = self.mmasub(
+                xval,
+                xold1,
+                xold2,
+                low,
+                upp,
+                f0val,
+                fval,
+                df0dx,
+                dfdx,
+                iter,
+                factor,
+                rho0,
+                rhoi,
+            )
+
+            # solve the subproblem
+            x, y, z, lam, xsi, eta, mu, zet, s = self.subsolvIP(
+                alfa, beta, low, upp, p0, q0, P, Q, b
+            )
+
+            new_f0val = eval_f(x)
+            new_fval = eval_g(x)
+
+            f0app = self.convex_approximation(x, p0, q0, b0, low, upp)
+            fapp = self.convex_approximation(x, P, Q, b, low, upp)
+
+            assert fapp.size == new_fval.size
+            if self.condition_check(f0app, new_f0val) and self.condition_check(
+                fapp, new_fval
+            ):
+                break
+            else:
+                rho0 = self.calculate_rho(rho0, new_f0val, f0app, x, xval, low, upp)
+                rhoi = self.calculate_rho(rhoi, new_fval, fapp, x, xval, low, upp)
+
+            inner_it += 1
 
         if self._timing:
             self._elapsedTime["mma"] = time.time() - t0
