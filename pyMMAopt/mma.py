@@ -813,6 +813,7 @@ class MMAClient(object):
                     rho0, new_f0val, f0app, x_inner, xval, low, upp
                 )
                 rhoi = self.calculate_rho(rhoi, new_fval, fapp, x_inner, xval, low, upp)
+                print(f"Recalculating rho")
 
             inner_it += 1
 

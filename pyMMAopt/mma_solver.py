@@ -14,6 +14,7 @@ from firedrake import (
 )
 from firedrake import COMM_SELF
 from mpi4py import MPI
+import time
 
 try:
     from .mma import MMAClient
@@ -40,22 +41,20 @@ class MMASolver(OptimizationSolver):
         control_funcspace = self.rf.controls[0].control.function_space()
         control_elem = control_funcspace.ufl_element()
 
+        supported_fe = ["DQ", "Discontinuous Lagrange"]
         if control_elem.family() == "TensorProductElement":
             sub_elem = control_elem.sub_elements()
             if (
-                sub_elem[0].family() not in ["DQ", "Discontinuous Lagrange"]
+                sub_elem[0].family() not in supported_fe
                 or sub_elem[0].degree() != 0
-                or sub_elem[1].family() != "Discontinuous Lagrange"
+                or sub_elem[1].family() not in supported_fe
                 or sub_elem[1].degree() != 0
             ):
                 raise RuntimeError(
                     "Only zero degree Discontinuous Galerkin function space for extruded elements is supported"
                 )
         else:
-            if (
-                control_elem.family() != "Discontinuous Lagrange"
-                or control_elem.degree() != 0
-            ):
+            if control_elem.family() not in supported_fe or control_elem.degree() != 0:
                 raise RuntimeError(
                     "Only zero degree Discontinuous Galerkin function space is supported"
                 )
@@ -281,6 +280,7 @@ class MMASolver(OptimizationSolver):
         comm = MPI.COMM_WORLD
         rank = comm.Get_rank()
         while change > tol and loop <= itermax:
+            t0 = time.time()
             # Cost functions
             f0val = eval_f(a_np)
             g0val = eval_g(a_np)
@@ -338,6 +338,7 @@ class MMASolver(OptimizationSolver):
             # print(f"rank: {rank} array {a_np}")
             # if np.all(np.array(change_arr[-10:]) < accepted_tol):
             #    break
+            print(f"Time per iteration: {time.time() - t0}")
 
         with a_function.dat.vec as a_vec:
             a_vec.array_w = a_np
