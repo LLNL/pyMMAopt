@@ -24,12 +24,12 @@ grid_resol = int(np.sqrt(n_vars))
 
 
 mesh = UnitSquareMesh(grid_resol, grid_resol)
-DG = FunctionSpace(mesh, 'DG', 0)
+DG = FunctionSpace(mesh, "DG", 0)
 x, y = SpatialCoordinate(mesh)
 rho = interpolate(x ** 2 * y ** 3, DG)
 
-J = assemble(Constant(1e4)*rho*rho*dx)
-G = assemble(rho*dx)
+J = assemble(Constant(1e4) * rho * rho * dx)
+G = assemble(rho * dx)
 m = Control(rho)
 Jhat = ReducedFunctional(J, m)
 Ghat = ReducedFunctional(G, m)
@@ -77,11 +77,12 @@ problem = MinimizationProblem(
 
 parameters_mma = {
     "move": 0.1,
-    "maximum_iterations": 3,
+    "maximum_iterations": 100,
     "m": 1,
     "IP": 0,
-    "tol": 1e-7,
-    "accepted_tol": 1e-5,
+    "tol": 1e-9,
+    "accepted_tol": 1e-8,
 }
 solver = MMASolver(problem, parameters=parameters_mma)
-solver.solve()
+rho_sol = solver.solve()
+File("quadratic_sol.pvd").write(rho_sol)

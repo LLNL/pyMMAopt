@@ -695,49 +695,14 @@ class MMAClient(object):
         local_b = np.dot(P, ux1inv) + np.dot(Q, xl1inv)
         b = self.comm.allreduce(local_b, op=MPI.SUM) - fval.T
 
-
         return p0, q0, P, Q, b0, b
-
-    def mmasub(
-        self,
-        xval,
-        xold1,
-        xold2,
-        low,
-        upp,
-        f0val,
-        fval,
-        df0dx,
-        dfdx,
-        iter,
-        factor,
-        rho0,
-        rhoi,
-    ):
-        """
-        Minimize    f_0(x) + a_0*z + sum( c_i*y_i + 0.5*d_i*(y_i)^2 )
-        subject to  f_i(x) - a_i*z - y_i <= 0,  i = 1,...,m
-                    xmin_j <= x_j <= self.xmax_j, j = 1,...,n
-                    z >= 0,   y_i >= 0, i = 1,...,m
-        """
-
-        # Calculation of the bounds alfa and beta
-        alfa, beta, factor = self.moveLim(iter, xval, xold1, xold2, low, upp, factor)
-
-        # Calculations of p0, q0, P, Q and b
-        p0, q0, P, Q, b0, b = self.mmasubMat(
-            xval, low, upp, f0val, df0dx, fval, dfdx, rho0, rhoi
-        )
-
-
-        return alfa, beta, p0, q0, P, Q, b0, b, factor
 
     def calculate_initial_rho(self, dfdx, xmax, xmin):
         local_rho = np.dot(np.abs(dfdx), xmax - xmin)
         rho = 0.1 / self.volume * self.comm.allreduce(local_rho, op=MPI.SUM)
         return rho
 
-    def calculate_rho(self, rho, theta, theta_hat, x_inner, x_outer, low, upp):
+    def calculate_rho(self, rho, new_fval, fapp, x_inner, x_outer, low, upp):
         denom = np.dot(
             self.Mdiag,
             (
@@ -746,7 +711,7 @@ class MMAClient(object):
                 / ((upp - x_inner) * (x_inner - low) * (self.xmax - self.xmin))
             ),
         )
-        delta = (theta - theta_hat) / denom
+        delta = (new_fval - fapp) / denom
 
         if delta > 0:
             return min(1.1 * (rho + delta), 10.0 * rho)
@@ -763,9 +728,9 @@ class MMAClient(object):
 
         if isinstance(fapp, np.ndarray):
             assert fapp.size == new_fval.size
-
-        fapp = np.array(fapp)
-        new_fval = np.array(new_fval)
+        else:
+            fapp = np.array([fapp])
+            new_fval = np.array([new_fval])
 
         tolerance = 1e-2
 
@@ -794,23 +759,28 @@ class MMAClient(object):
         eval_f=None,
         eval_g=None,
     ):
+        # TODO clean up iter?
 
         # Calculation of the asymptotes low and upp
         low, upp = self.moveAsymp(xval, xold1, xold2, low, upp, iter)
+
+        # Calculation of the bounds alfa and beta
+        alfa, beta, factor = self.moveLim(iter, xval, xold1, xold2, low, upp, factor)
 
         rho0 = self.calculate_initial_rho(df0dx, self.xmax, self.xmin)
         rhoi = self.calculate_initial_rho(dfdx, self.xmax, self.xmin)
 
         ## Outer iteration
-        # - Fix asymptotes
+        # - Fix asymptotes, alfa and beta
         # - Initial rho
         # - Gradients
+        # - TODO Calculate the function? Maybe you can let the inner iteration take care of it to avoid repeated expensive calls
 
         ## Inner iterations will:
         # - Generate the subproblem with the given rho values
         # - Solve the subproblem
         # - Calculate the function approximation with the new solution
-        # - Re evaluate the real cost function with the new solution
+        # - Re-evaluate the real cost function with the new solution
         # - Check that the GCMMA condition is satisfied
         # - Recalculate rho if necessary
 
@@ -818,32 +788,20 @@ class MMAClient(object):
         inner_it = 0
         while inner_it < inner_it_max:
             # generate subproblem
-            alfa, beta, p0, q0, P, Q, b0, b, factor = self.mmasub(
-                xval,
-                xold1,
-                xold2,
-                low,
-                upp,
-                f0val,
-                fval,
-                df0dx,
-                dfdx,
-                iter,
-                factor,
-                rho0,
-                rhoi,
+            p0, q0, P, Q, b0, b = self.mmasubMat(
+                xval, low, upp, f0val, df0dx, fval, dfdx, rho0, rhoi
             )
 
             # solve the subproblem
-            x, y, z, lam, xsi, eta, mu, zet, s = self.subsolvIP(
+            x_inner, y, z, lam, xsi, eta, mu, zet, s = self.subsolvIP(
                 alfa, beta, low, upp, p0, q0, P, Q, b
             )
 
-            new_f0val = eval_f(x)
-            new_fval = eval_g(x)
+            new_f0val = eval_f(x_inner)
+            new_fval = eval_g(x_inner)
 
-            f0app = self.convex_approximation(x, p0, q0, b0, low, upp)
-            fapp = self.convex_approximation(x, P, Q, b, low, upp)
+            f0app = self.convex_approximation(x_inner, p0, q0, b0, low, upp)
+            fapp = self.convex_approximation(x_inner, P, Q, b, low, upp)
 
             assert fapp.size == new_fval.size
             if self.condition_check(f0app, new_f0val) and self.condition_check(
@@ -851,9 +809,11 @@ class MMAClient(object):
             ):
                 break
             else:
-                rho0 = self.calculate_rho(rho0, new_f0val, f0app, x, xval, low, upp)
-                rhoi = self.calculate_rho(rhoi, new_fval, fapp, x, xval, low, upp)
+                rho0 = self.calculate_rho(
+                    rho0, new_f0val, f0app, x_inner, xval, low, upp
+                )
+                rhoi = self.calculate_rho(rhoi, new_fval, fapp, x_inner, xval, low, upp)
 
             inner_it += 1
 
-        return x, y, z, lam, xsi, eta, mu, zet, s, low, upp, factor
+        return x_inner, y, z, lam, xsi, eta, mu, zet, s, low, upp, factor

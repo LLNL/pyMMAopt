@@ -98,20 +98,7 @@ class MMASolver(OptimizationSolver):
             "c": [],
             "d": [],
             "IP": 0,
-            "_timing": 1,
             "norm": "l2",
-            "_elapsedTime": {
-                "resKKT": -1,
-                "preCompute": -1,
-                "JacDual": -1,
-                "JacPrim": -1,
-                "RHSdual": -1,
-                "nlIterPerEpsilon": [],
-                "relaxPerNlIter": [],
-                "timeEpsilonLoop": [],
-                "mmasub": {"moveAsymp": -1, "moveLim": -1, "mmasubMat": -1, "all": -1},
-                "subsolvIP": {"lin": -1, "relax": -1},
-            },
         }
         if self.parameters is not None:
             for key in self.parameters.keys():
@@ -314,7 +301,18 @@ class MMASolver(OptimizationSolver):
             clientOpt.xmax = np.minimum(self.ub, a_np + clientOpt.move)
 
             xmma, y, z, lam, xsi, eta, mu, zet, s, low, upp, factor = clientOpt.mma(
-                a_np, xold1, xold2, low, upp, f0val, g0val, df0dx, dg0dx, loop
+                a_np,
+                xold1,
+                xold2,
+                low,
+                upp,
+                f0val,
+                g0val,
+                df0dx,
+                dg0dx,
+                loop,
+                eval_f=eval_f,
+                eval_g=eval_g,
             )
 
             local_change = np.abs(np.max(xmma - xold1))
@@ -329,7 +327,7 @@ class MMASolver(OptimizationSolver):
             PETSc.Sys.Print(
                 *(map("g[{0[0]}]: {0[1][0]} ".format, enumerate(g0val))), end=""
             )
-            PETSc.Sys.Print(" change: {:.3f}".format(change))
+            PETSc.Sys.Print(" change: {:.6f}".format(change))
 
             change_arr.append(change)
             self.change = change
