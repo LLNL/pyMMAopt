@@ -72,18 +72,6 @@ class MMAClient(object):
             "d": [],
             "IP": 0,
             "Mdiag": None,
-            "_timing": 1,
-            "_elapsedTime": {
-                "resKKT": -1,
-                "preCompute": -1,
-                "JacDual": -1,
-                "RHSdual": -1,
-                "nlIterPerEpsilon": [],
-                "relaxPerNlIter": [],
-                "timeEpsilonLoop": [],
-                "mmasub": {"moveAsymp": -1, "moveLim": -1, "mmasubMat": -1, "all": -1},
-                "subsolvIP": {"lin": -1, "relax": -1},
-            },
         }
 
         # create the attributes
@@ -207,8 +195,6 @@ class MMAClient(object):
         epsi,
     ):
         Mdiag = self.Mdiag
-        if self._timing:
-            t0 = time.time()
         ux1 = upp - x
         xl1 = x - low
         ux2 = ux1 * ux1
@@ -299,17 +285,12 @@ class MMAClient(object):
             )
         )
 
-        if self._timing:
-            self._elapsedTime["resKKT"] = time.time() - t0
-
         return residu_norm, residu_max
 
     def preCompute(
         self, alfa, beta, low, upp, p0, q0, P, Q, b, x, y, z, lam, xsi, eta, mu, s, epsi
     ):
         # delx,dely,delz,dellam,diagx,diagy,diagxinv,diaglamyi,GG):
-        if self._timing:
-            t0 = time.time()
         invxalpha = ne.evaluate("1 / (x - alfa)")
         invxbeta = ne.evaluate("1 / (beta - x)")
         ux1 = upp - x
@@ -345,8 +326,6 @@ class MMAClient(object):
         diagyinv = 1.0 / diagy
         diaglam = s / lam
         diaglamyi = diaglam + diagyinv
-        if self._timing:
-            self._elapsedTime["preCompute"] = time.time() - t0
 
         return delx, dely, delz, dellam, diagx, diagy, diagxinv, diaglamyi, GG
 
@@ -355,8 +334,6 @@ class MMAClient(object):
         JAC = [Alam     a
                 a'    -zet/z ]
         """
-        if self._timing:
-            t0 = time.time()
         local_Alam = np.dot(diagxinvGG, GG.T)
         Alam = self.comm.allreduce(local_Alam, op=MPI.SUM)
         mm = range(0, self.m)
@@ -366,21 +343,15 @@ class MMAClient(object):
         jac[self.m, 0 : self.m] = self.a
         jac[self.m, self.m] = -zet / z
         jac[0 : self.m, self.m] = self.a
-        if self._timing:
-            self._elapsedTime["JacDual"] = time.time() - t0
 
         return jac
 
     def RHSdual(self, dellam, delx, dely, delz, diagxinvGG, diagy, GG):
-        if self._timing:
-            t0 = time.time()
         rhs = np.empty(shape=(self.m + 1,), dtype=float)
         local_diagxinvGG_delx = diagxinvGG.dot(delx)
         diagxinvGG_delx = self.comm.allreduce(local_diagxinvGG_delx, op=MPI.SUM)
         rhs[0 : self.m] = dellam + dely / diagy - diagxinvGG_delx
         rhs[self.m] = delz
-        if self._timing:
-            self._elapsedTime["RHSdual"] = time.time() - t0
         return rhs
 
     def getNewPoint(
@@ -405,8 +376,6 @@ class MMAClient(object):
         ds,
         step,
     ):
-        if self._timing:
-            t0 = time.time()
         x = xold + step * dx
         y = yold + step * dy
         z = zold + step * dz
@@ -416,8 +385,6 @@ class MMAClient(object):
         mu = muold + step * dmu
         zet = zetold + step * dzet
         s = sold + step * ds
-        if self._timing:
-            self._elapsedTime["JacDual"] = time.time() - t0
 
         return x, y, z, lam, xsi, eta, mu, zet, s
 
@@ -451,14 +418,8 @@ class MMAClient(object):
 
         if self.IP > 0:
             print(str("*" * 80))
-        if self._timing:
-            self._elapsedTime["nlIterPerEpsilon"] = []
-            self._elapsedTime["relaxPerNlIter"] = []
-            self._elapsedTime["timeEpsilonLoop"] = []
 
         while epsi > self.epsimin:  # Loop over epsilon
-            if self._timing:
-                t0Eps = time.time()
             self.iPrint(["Interior Point it.", "epsilon"], [epsiIt, epsi], 0)
 
             # compute residual
@@ -531,11 +492,7 @@ class MMAClient(object):
                     diagxinvGG = diagxinv * GG
                     AA = self.JacDual(diagxinvGG, diaglamyi, GG, z, zet)
                     bb = self.RHSdual(dellam, delx, dely, delz, diagxinvGG, diagy, GG)
-                    if self._timing:
-                        t0Solve = time.time()
                     solut = np.linalg.solve(AA, bb)
-                    if self._timing:
-                        self._elapsedTime["subsolvIP"]["lin"] = time.time() - t0Solve
                     dlam = solut[0 : self.m]
                     dz = solut[self.m]
                     # dx2 = - delx*diagxinv - np.transpose(GG).dot(dlam)/diagx
@@ -592,8 +549,6 @@ class MMAClient(object):
                 resinewNorm = 2 * residuNorm
                 resinewMax = 1e10
                 while resinewNorm > residuNorm and itto < 200:
-                    if self._timing:
-                        t0_relax = time.time()
                     self.iPrint(
                         ["relax. it.", "Norm(res)", "step"],
                         [itto, resinewNorm, steg],
@@ -648,11 +603,7 @@ class MMAClient(object):
                     # update step
                     steg /= 2.0
                     itto += 1
-                    if self._timing:
-                        self._elapsedTime["subsolvIP"]["relax"] = time.time() - t0_relax
 
-                if self._timing:
-                    relaxloopEpsi.append(itto)
                 self.iPrint(
                     ["relax. it.", "Norm(res)", "step"], [itto, resinewNorm, steg], 2
                 )
@@ -661,10 +612,6 @@ class MMAClient(object):
                 residuMax = resinewMax
                 steg *= 2.0
                 it_NL += 1
-            if self._timing:
-                self._elapsedTime["timeEpsilonLoop"].append(time.time() - t0Eps)
-                self._elapsedTime["nlIterPerEpsilon"].append(it_NL - 1)
-                self._elapsedTime["relaxPerNlIter"].append([relaxloopEpsi])
 
             if it_NL > 198:
                 self.iPrint(["it limit", "with epsilon"], [it_NL, epsi], 0)
@@ -680,8 +627,6 @@ class MMAClient(object):
         """
         Calculation of the asymptotes low and upp
         """
-        if self._timing:
-            t0 = time.time()
         if iter <= 2:
             low = xval - self.asyinit * (self.xmax - self.xmin)
             upp = xval + self.asyinit * (self.xmax - self.xmin)
@@ -696,8 +641,6 @@ class MMAClient(object):
             low = np.minimum(low, xval - 0.01 * (self.xmax - self.xmin))
             upp = np.minimum(upp, xval + 10 * (self.xmax - self.xmin))
             upp = np.maximum(upp, xval + 0.01 * (self.xmax - self.xmin))
-        if self._timing:
-            self._elapsedTime["mmasub"]["moveAsymp"] = time.time() - t0
 
         return low, upp
 
@@ -705,8 +648,6 @@ class MMAClient(object):
         """
         Calculation of the move limits: alfa and beta
         """
-        if self._timing:
-            t0 = time.time()
         aa = np.maximum(
             low + self.albefa * (xval - low), xval - self.move * (self.xmax - self.xmin)
         )
@@ -715,8 +656,6 @@ class MMAClient(object):
             upp - self.albefa * (upp - xval), xval + self.move * (self.xmax - self.xmin)
         )
         beta = np.minimum(aa, self.xmax)
-        if self._timing:
-            self._elapsedTime["mmasub"]["moveLim"] = time.time() - t0
 
         return alfa, beta, factor
 
@@ -724,8 +663,6 @@ class MMAClient(object):
         """
         Calculations of p0, q0, P, Q and b.
         """
-        if self._timing:
-            t0 = time.time()
 
         xmami = self.xmax - self.xmin
         xmamiinv = 1.0 / xmami
@@ -758,8 +695,6 @@ class MMAClient(object):
         local_b = np.dot(P, ux1inv) + np.dot(Q, xl1inv)
         b = self.comm.allreduce(local_b, op=MPI.SUM) - fval.T
 
-        if self._timing:
-            self._elapsedTime["mmasub"]["mmasubMat"] = time.time() - t0
 
         return p0, q0, P, Q, b0, b
 
@@ -785,8 +720,6 @@ class MMAClient(object):
                     xmin_j <= x_j <= self.xmax_j, j = 1,...,n
                     z >= 0,   y_i >= 0, i = 1,...,m
         """
-        if self._timing:
-            t0 = time.time()
 
         # Calculation of the bounds alfa and beta
         alfa, beta, factor = self.moveLim(iter, xval, xold1, xold2, low, upp, factor)
@@ -796,8 +729,6 @@ class MMAClient(object):
             xval, low, upp, f0val, df0dx, fval, dfdx, rho0, rhoi
         )
 
-        if self._timing:
-            self._elapsedTime["mmasub"]["all"] = time.time() - t0
 
         return alfa, beta, p0, q0, P, Q, b0, b, factor
 
@@ -863,8 +794,6 @@ class MMAClient(object):
         eval_f=None,
         eval_g=None,
     ):
-        if self._timing:
-            t0 = time.time()
 
         # Calculation of the asymptotes low and upp
         low, upp = self.moveAsymp(xval, xold1, xold2, low, upp, iter)
@@ -926,8 +855,5 @@ class MMAClient(object):
                 rhoi = self.calculate_rho(rhoi, new_fval, fapp, x, xval, low, upp)
 
             inner_it += 1
-
-        if self._timing:
-            self._elapsedTime["mma"] = time.time() - t0
 
         return x, y, z, lam, xsi, eta, mu, zet, s, low, upp, factor
