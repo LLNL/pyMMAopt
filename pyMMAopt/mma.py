@@ -246,9 +246,7 @@ class MMAClient(object):
             return residuMax
 
         # rex
-        local_residu_x = ne.evaluate(
-            "(dpsidx - Mdiag*xsi + Mdiag*eta)"
-        )  # TODO weight the xsi and eta with the mass matrix
+        local_residu_x = ne.evaluate("(dpsidx - Mdiag*xsi + Mdiag*eta)")
         residu_x_norm = global_res_norm_square(
             ne.evaluate("local_residu_x / sqrt(Mdiag)")
         )  # This components is in the dual space, the norm has
@@ -742,8 +740,8 @@ class MMAClient(object):
             t0 = time.time()
 
         xmami = self.xmax - self.xmin
-        xmamieps = np.array([0.00001 * self.local_n])
-        xmami = np.maximum(xmami, xmamieps)
+        # xmamieps = np.array([0.00001 * self.local_n])
+        # xmami = np.maximum(xmami, xmamieps)
         xmamiinv = 1.0 / xmami
         ux1 = upp - xval
         ux2 = ux1 * ux1
