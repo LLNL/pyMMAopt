@@ -1,8 +1,19 @@
 # from fenics_adjoint import *
+from pyadjoint.adjfloat import AdjFloat
 from pyadjoint.reduced_functional_numpy import ReducedFunctionalNumPy
 from pyadjoint.optimization.optimization_solver import OptimizationSolver
 from pyadjoint.reduced_functional_numpy import gather
-from firedrake import PETSc
+from firedrake import (
+    PETSc,
+    Function,
+    assemble,
+    dx,
+    TrialFunction,
+    TestFunction,
+    Constant,
+)
+from firedrake import COMM_SELF
+from mpi4py import MPI
 
 try:
     from .mma import MMAClient
@@ -12,9 +23,50 @@ except ImportError:
 import numpy
 
 
+print = lambda x: PETSc.Sys.Print(x, comm=COMM_SELF)
+
+
 class MMASolver(OptimizationSolver):
     def __init__(self, problem, parameters=None):
         OptimizationSolver.__init__(self, problem, parameters)
+
+        self.rf = self.problem.reduced_functional
+        if len(self.rf.controls) > 1:
+            raise RuntimeError("Only one control is possible for MMA")
+
+        if isinstance(self.rf.controls[0].control, Function) is False:
+            raise RuntimeError("Only control of type Function is possible for MMA")
+
+        control_funcspace = self.rf.controls[0].control.function_space()
+        control_elem = control_funcspace.ufl_element()
+
+        if control_elem.family() == "TensorProductElement":
+            sub_elem = control_elem.sub_elements()
+            if (
+                sub_elem[0].family() not in ["DQ", "Discontinuous Lagrange"]
+                or sub_elem[0].degree() != 0
+                or sub_elem[1].family() != "Discontinuous Lagrange"
+                or sub_elem[1].degree() != 0
+            ):
+                raise RuntimeError(
+                    "Only zero degree Discontinuous Galerkin function space for extruded elements is supported"
+                )
+        else:
+            if (
+                control_elem.family() not in ["DQ", "Discontinuous Lagrange"]
+                or control_elem.degree() != 0
+            ):
+                raise RuntimeError(
+                    "Only zero degree Discontinuous Galerkin function space is supported"
+                )
+
+        if parameters.get("norm") == "L2":
+            self.Mdiag = assemble(
+                TrialFunction(control_funcspace) * TestFunction(control_funcspace) * dx,
+                diagonal=True,
+            ).dat.data_ro
+        else:
+            self.Mdiag = numpy.ones(len(self.rf.controls[0].control.dat.data_ro))
 
         self.__build_mma_problem()
         self.__set_parameters()
@@ -29,7 +81,6 @@ class MMASolver(OptimizationSolver):
         passed in, if any."""
         param_defaults = {
             "m": 1,
-            "n": 1,
             "tol": 1e-8,
             "accepted_tol": 1e-4,
             "maximum_iterations": 100,
@@ -48,6 +99,7 @@ class MMASolver(OptimizationSolver):
             "d": [],
             "IP": 0,
             "_timing": 1,
+            "norm": "l2",
             "_elapsedTime": {
                 "resKKT": -1,
                 "preCompute": -1,
@@ -77,13 +129,20 @@ class MMASolver(OptimizationSolver):
     def __build_mma_problem(self):
         """Build the pyipopt problem from the OptimizationProblem instance."""
 
-        self.rfn = ReducedFunctionalNumPy(self.problem.reduced_functional)
-        ncontrols = len(self.rfn.get_controls())
+        self.rf = self.problem.reduced_functional
+        assert len(self.rf.controls) == 1, "Only one control is possible for MMA"
+        assert isinstance(
+            self.rf.controls[0].control, Function
+        ), "Only control of type Function is possible for MMA"
+        control = self.rf.controls[0]
+        n_local_control = len(
+            control.control.dat.data_ro
+        )  # There is another function: dat.data_ro_with_halos (might be useful)
 
         (self.lb, self.ub) = self.__get_bounds()
         (nconstraints, self.fun_g, self.jac_g) = self.__get_constraints()
 
-        self.n = ncontrols
+        self.n = n_local_control
         self.m = nconstraints
         # if isinstance(self.problem, MaximizationProblem):
         # multiply objective function by -1 internally in
@@ -100,22 +159,35 @@ class MMASolver(OptimizationSolver):
             lb_list = []
             ub_list = []  # a list of numpy arrays, one for each control
 
-            for (bound, control) in zip(bounds, self.rfn.controls):
+            for (bound, control) in zip(bounds, self.rf.controls):
                 general_lb, general_ub = bound  # could be float, Constant, or Function
 
-                if isinstance(general_lb, (float, int)):
-                    len_control = len(self.rfn.get_global(control))
-                    lb = numpy.array([float(general_lb)] * len_control)
+                if isinstance(control.control, Function):
+                    n_local_control = len(
+                        control.control.dat.data_ro
+                    )  # There is another function: dat.data_ro_with_halos (might be useful)
+                elif isinstance(control.control, Constant) or isinstance(
+                    control.control, AdjFloat
+                ):
+                    n_local_control = 1
                 else:
-                    lb = self.rfn.get_global(general_lb)
+                    raise TypeError(
+                        f"Type of control: {type(control.control)} not supported by pyMMAopt"
+                    )
+
+                if isinstance(general_lb, (float, int)):
+                    lb = numpy.array([float(general_lb)] * n_local_control)
+                else:
+                    with general_lb.dat.vec_ro as lb_v:
+                        lb = lb_v.array
 
                 lb_list.append(lb)
 
                 if isinstance(general_ub, (float, int)):
-                    len_control = len(self.rfn.get_global(control))
-                    ub = numpy.array([float(general_ub)] * len_control)
+                    ub = numpy.array([float(general_ub)] * n_local_control)
                 else:
-                    ub = self.rfn.get_global(general_ub)
+                    with general_ub.dat.vec_ro as ub_v:
+                        ub = ub_v.array
 
                 ub_list.append(ub)
 
@@ -124,7 +196,7 @@ class MMASolver(OptimizationSolver):
 
         else:
             # Unfortunately you really need to specify bounds, I think?!
-            ncontrols = len(self.rfn.get_controls())
+            ncontrols = len(self.rf.get_controls())
             max_float = numpy.finfo(numpy.double).max
             ub = numpy.array([max_float] * ncontrols)
 
@@ -160,8 +232,6 @@ class MMASolver(OptimizationSolver):
         else:
             # The length of the constraint vector
             nconstraints = constraint._get_constraint_dim()
-            ncontrols = len(self.rfn.get_controls())
-
             # The constraint function
             def fun_g(x, user_data=None):
                 out = numpy.array(constraint.function(x), dtype=float)
@@ -183,12 +253,16 @@ class MMASolver(OptimizationSolver):
         tol = self.parameters["tol"]
         accepted_tol = self.parameters["accepted_tol"]
         # Initial estimation
-        a_np = self.rfn.get_controls()
+        control_function = self.rf.controls[0].control
+        with control_function.dat.vec_ro as control_vec:
+            a_np = control_vec.array
 
         import numpy as np
 
         self.parameters["xmin"] = self.lb
         self.parameters["xmax"] = self.ub
+        self.parameters["n"] = control_function.function_space().dim()
+        self.parameters["Mdiag"] = self.Mdiag
         itermax = self.parameters["maximum_iterations"]
 
         # Create an optimizer client
@@ -202,14 +276,25 @@ class MMASolver(OptimizationSolver):
 
         change_arr = []
 
-        while change > tol and loop <= itermax:
-            f0val = self.rfn(a_np)
-            df0dx = self.rfn.derivative(a_np)
+        a_function = control_function.copy(deepcopy=True)
 
-            g0val = -1.0 * self.fun_g(a_np)
-            j = self.jac_g(a_np)
-            dg0dx = -1.0 * numpy.array(gather(j), dtype=float)
-            dg0dx = numpy.reshape(dg0dx, [self.m, self.n])
+        dg0dx = np.empty([self.m, self.n])
+        df0dx = np.empty([self.n])
+        comm = MPI.COMM_WORLD
+        rank = comm.Get_rank()
+        while change > tol and loop <= itermax:
+            with a_function.dat.vec as a_vec:
+                a_vec.array_w = a_np
+            f0val = self.rf(a_function)
+            df0dx_func = self.rf.derivative()
+            with df0dx_func.dat.vec_ro as df_vec:
+                df0dx[:] = df_vec.array
+
+            g0val = -1.0 * self.fun_g(a_function)
+            jac = self.jac_g(a_function)
+            for j, jac_j in enumerate(jac):
+                with jac_j[0].dat.vec_ro as jac_vec:
+                    dg0dx[j, :] = -1.0 * jac_vec.array
 
             # move limits
             clientOpt.xmin = np.maximum(self.lb, a_np - clientOpt.move)
@@ -219,7 +304,8 @@ class MMASolver(OptimizationSolver):
                 a_np, xold1, xold2, low, upp, f0val, g0val, df0dx, dg0dx, loop
             )
 
-            change = np.abs(np.max(xmma - xold1))
+            local_change = np.abs(np.max(xmma - xold1))
+            change = comm.allreduce(local_change, op=MPI.MAX)
             # update design variables
             xold2 = np.copy(xold1)
             xold1 = np.copy(a_np)
@@ -227,7 +313,9 @@ class MMASolver(OptimizationSolver):
             loop = loop + 1
 
             PETSc.Sys.Print("It: {it}, obj: {obj} ".format(it=loop, obj=f0val), end="")
-            PETSc.Sys.Print(*(map("g[{0[0]}]: {0[1][0]} ".format, enumerate(g0val))), end="")
+            PETSc.Sys.Print(
+                *(map("g[{0[0]}]: {0[1][0]} ".format, enumerate(g0val))), end=""
+            )
             PETSc.Sys.Print(" change: {:.3f}".format(change))
 
             change_arr.append(change)
@@ -236,18 +324,19 @@ class MMASolver(OptimizationSolver):
             self.g0val = g0val
             self.loop = loop
 
-            if np.all(np.array(change_arr[-10:]) < accepted_tol):
-                break
+            # print(f"rank: {rank} array {a_np}")
+            # if np.all(np.array(change_arr[-10:]) < accepted_tol):
+            #    break
 
-        new_params = [control.copy_data() for control in self.rfn.controls]
-        self.rfn.set_local(new_params, a_np)
+        with a_function.dat.vec as a_vec:
+            a_vec.array_w = a_np
+        # self.rf.set_local(new_params, a_np)
         PETSc.Sys.Print(
             "Optimization finished with change: {0:.5f} and iterations: {1}".format(
                 change, loop
             )
         )
-
-        return self.rfn.controls.delist(new_params)
+        return self.rf.controls.delist([a_function])
 
     def current_state(self):
         return (

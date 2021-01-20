@@ -1,29 +1,41 @@
 from firedrake import *
+from firedrake.petsc import PETSc
 from firedrake_adjoint import *
 from pyMMAopt import MMASolver
 
-mesh = UnitSquareMesh(50, 50)
+print = lambda x: PETSc.Sys.Print(x, comm=COMM_SELF)
+
+import numpy as np
+import argparse
+
+
+parser = argparse.ArgumentParser(description="Simple optimization problem")
+parser.add_argument(
+    "--n_vars",
+    action="store",
+    dest="n_vars",
+    type=int,
+    help="Number of design variables",
+    default=100,
+)
+args = parser.parse_args()
+n_vars = args.n_vars
+grid_resol = int(np.sqrt(n_vars))
+
+
+mesh = UnitSquareMesh(grid_resol, grid_resol)
 DG = FunctionSpace(mesh, 'DG', 0)
 x, y = SpatialCoordinate(mesh)
-rho = interpolate(x**2*y**3, DG)
-
-controls_f = File("design.pvd")
-gradient_f = File("gradient.pvd")
-rho_viz = Function(DG)
-grad_viz = Function(DG)
-def deriv_cb(j, dj, rho):
-    rho_viz.assign(rho)
-    controls_f.write(rho_viz)
-    grad_viz.assign(dj)
-    gradient_f.write(grad_viz)
+rho = interpolate(x ** 2 * y ** 3, DG)
 
 J = assemble(Constant(1e4)*rho*rho*dx)
 G = assemble(rho*dx)
 m = Control(rho)
-Jhat = ReducedFunctional(J, m, derivative_cb_post=deriv_cb)
+Jhat = ReducedFunctional(J, m)
 Ghat = ReducedFunctional(G, m)
 Glimit = 5.0
 Gcontrol = Control(G)
+
 
 class ReducedInequality(InequalityConstraint):
     def __init__(self, Ghat, Glimit, Gcontrol):
@@ -53,6 +65,7 @@ class ReducedInequality(InequalityConstraint):
         """Return the number of components in the constraint vector (here, one)."""
         return 1
 
+
 problem = MinimizationProblem(
     Jhat,
     bounds=(1e-6, 1.0),
@@ -64,7 +77,7 @@ problem = MinimizationProblem(
 
 parameters_mma = {
     "move": 0.1,
-    "maximum_iterations": 200,
+    "maximum_iterations": 3,
     "m": 1,
     "IP": 0,
     "tol": 1e-7,
