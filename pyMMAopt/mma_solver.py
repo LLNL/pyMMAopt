@@ -297,8 +297,8 @@ class MMASolver(OptimizationSolver):
                     dg0dx[j, :] = -1.0 * jac_vec.array
 
             # move limits
-            clientOpt.xmin = np.maximum(self.lb, a_np - clientOpt.move)
-            clientOpt.xmax = np.minimum(self.ub, a_np + clientOpt.move)
+            clientOpt.xmin = self.lb
+            clientOpt.xmax = self.ub
 
             xmma, y, z, lam, xsi, eta, mu, zet, s, low, upp, factor = clientOpt.mma(
                 a_np,

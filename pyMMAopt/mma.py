@@ -690,9 +690,11 @@ class MMAClient(object):
         xl1inv = ne.evaluate("1.0 / xl1")
 
         local_b0 = np.dot(p0, ux1inv) + np.dot(q0, xl1inv)
+        # TODO In the paper, the signs are flipped, this can lead to bugs...
         b0 = self.comm.allreduce(local_b0, op=MPI.SUM) - f0val
 
         local_b = np.dot(P, ux1inv) + np.dot(Q, xl1inv)
+        # TODO In the paper, the signs are flipped, this can lead to bugs...
         b = self.comm.allreduce(local_b, op=MPI.SUM) - fval.T
 
         return p0, q0, P, Q, b0, b
@@ -721,7 +723,7 @@ class MMAClient(object):
     def convex_approximation(self, x_inner, p, q, b, low, upp):
         # TODO do we need to add rho?
         local_fapp = np.sum(p / (upp - x_inner) + q / (x_inner - low))
-        fapp = self.comm.allreduce(local_fapp, op=MPI.SUM) + b
+        fapp = self.comm.allreduce(local_fapp, op=MPI.SUM) - b
         return fapp
 
     def condition_check(self, fapp, new_fval):
@@ -791,6 +793,7 @@ class MMAClient(object):
             p0, q0, P, Q, b0, b = self.mmasubMat(
                 xval, low, upp, f0val, df0dx, fval, dfdx, rho0, rhoi
             )
+            print(f"rho0: {rho0}, rhoi: {rhoi}")
 
             # solve the subproblem
             x_inner, y, z, lam, xsi, eta, mu, zet, s = self.subsolvIP(
