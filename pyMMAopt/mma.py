@@ -102,75 +102,31 @@ class MMAClient(object):
 
     def residualKKTPrimal(
         self,
-        m,
-        n,
         x,
         y,
         z,
         lam,
-        xsi,
-        eta,
-        mu,
-        zet,
-        s,
-        xmin,
-        xmax,
         df0dx,
         fval,
         dfdx,
-        a0,
-        a,
-        c,
-        d,
     ):
-        """
-        The left hand sides of the KKT conditions for the following
-        nonlinear programming problem are calculated.
+        residual_gradients = (df0dx + np.dot(np.transpose(dfdx), lam)) / self.Mdiag
+        mu_min = np.where(residual_gradients > 0.0, residual_gradients, 0.0)
+        mu_min *= (self.xmin - x) * np.sqrt(self.Mdiag)
+        mu_max = np.where(residual_gradients < 0.0, -residual_gradients, 0.0)
+        mu_max *= (self.xmax - x) * np.sqrt(self.Mdiag)
+        norm2_grad = mu_min ** 2 + mu_max ** 2
+        # TODO reduce
+        local_norm2 = np.sum(norm2_grad)
+        norm2 = self.comm.allreduce(local_norm2, op=MPI.SUM)
+        kkt_norm = np.sqrt(norm2)
 
-        Minimize    f_0(x) + a_0*z + sum( c_i*y_i + 0.5*d_i*(y_i)^2 )
-        subject to  f_i(x) - a_i*z - y_i <= 0,  i = 1,...,m
-                    xmax_j <= x_j <= xmin_j,    j = 1,...,n
-                    z >= 0,   y_i >= 0,         i = 1,...,m
-        INPUT:
-        m    : The number of general constraints.
-        n    : The number of variables x_j.
-        x    : List of current values of the n variables x_j.
-        y    : List of current values of the m variables y_i.
-        z    : List of current value of the single variable z.
-        lam  : List of Lagrange multipliers for the m general constraints.
-        xsi  : List of Lagrange multipliers for the n constraints xmin_j-x_j<=0
-        eta  : List of Lagrange multipliers for the n constraints x_j-xmax_j<=0
-        mu   : List of Lagrange multipliers for the m constraints -y_i<=0
-        zet  : List of Lagrange multiplier for the single constraint -z<=0
-        s    : List of Slack variables for the m general constraints.
-        xmin : List of Lower bounds for the variables x_j.
-        xmax : List of Upper bounds for the variables x_j.
-        df0dx: List of of the derivatives of the objective function f_0
-                with respect to the variables x_j, calculated at x.
-        fval : List of the values of the constraint functions f_i,
-                calculated at x.
-        dfdx : (m x n)-List with the derivatives of the constraint functions
-                f_i with respect to the variables x_j, calculated at x.
-        dfdx(i,j) : List of the derivative of f_i with respect to x_j.
-        a0   : Constant a_0 in the term a_0*z.
-        a    : List of the constants a_i in the terms a_i*z.
-        c    : List of the constants c_i in the terms c_i*y_i.
-        d    : List of the constants d_i in the terms 0.5*d_i*(y_i)^2.
-
-        OUTPUT:
-        residual = (list) residual vector for the KKT conditions.
-        """
-        residual = []
-        residual.extend(df0dx + np.dot(np.transpose(dfdx), lam) - xsi + eta)  # rex
-        residual.extend(c + d * y - mu - lam)  # rey
-        residual.append(self.a0 - zet - np.dot(a, lam))  # rez
-        residual.extend(fval - self.a * z - y + s)  # relam
-        residual.extend(xsi * (x - self.xmin))  # rexsi
-        residual.extend(eta * (self.xmax - x))  # reeta
-        residual.extend(mu * y)  # remu
-        residual.append(zet * z)  # rezet
-        residual.extend(lam * s)  # res
-        return np.array(residual)
+        residual_constraints = fval - self.a * z - y
+        residual_constraints = np.where(
+            residual_constraints < 0.0, lam * residual_constraints, residual_constraints
+        )
+        kkt_norm += np.sqrt(np.sum(residual_constraints ** 2))
+        return kkt_norm
 
     def resKKT(
         self,

@@ -315,6 +315,16 @@ class MMASolver(OptimizationSolver):
                 eval_g=eval_g,
             )
 
+            kkt_norm = clientOpt.residualKKTPrimal(
+                xmma,
+                y,
+                z,
+                lam,
+                df0dx,
+                g0val,
+                dg0dx,
+            )
+
             local_change = np.abs(np.max(xmma - xold1))
             change = comm.allreduce(local_change, op=MPI.MAX)
             # update design variables
@@ -327,6 +337,8 @@ class MMASolver(OptimizationSolver):
             PETSc.Sys.Print(
                 *(map("g[{0[0]}]: {0[1][0]} ".format, enumerate(g0val))), end=""
             )
+            PETSc.Sys.Print(" Inner iterations: {:d}".format(inner_it), end="")
+            PETSc.Sys.Print(" kkt: {:6f}".format(kkt_norm), end="")
             PETSc.Sys.Print(" change: {:.6f}".format(change))
 
             change_arr.append(change)
