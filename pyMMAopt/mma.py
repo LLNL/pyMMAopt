@@ -84,6 +84,7 @@ class MMAClient(object):
 
         local_volume = np.sum(self.Mdiag)
         self.volume = self.comm.allreduce(local_volume, op=MPI.SUM)
+        print(f"Volume for MMA is: {self.volume}")
 
         # clasical configuration when parameters are unspecified
         if len(self.a) == 0:
@@ -119,13 +120,12 @@ class MMAClient(object):
         # TODO reduce
         local_norm2 = np.sum(norm2_grad)
         norm2 = self.comm.allreduce(local_norm2, op=MPI.SUM)
-        kkt_norm = np.sqrt(norm2)
 
         residual_constraints = fval - self.a * z - y
         residual_constraints = np.where(
             residual_constraints < 0.0, lam * residual_constraints, residual_constraints
         )
-        kkt_norm += np.sqrt(np.sum(residual_constraints ** 2))
+        kkt_norm = np.sqrt(np.sum(residual_constraints ** 2) + norm2)
         return kkt_norm
 
     def resKKT(
@@ -404,7 +404,7 @@ class MMAClient(object):
             # Solve the NL KKT problem for a given epsilon
             it_NL = 1
             relaxloopEpsi = []
-            while residuNorm > 0.8 * epsi and it_NL < 200:
+            while residuNorm > 0.9 * epsi and it_NL < 200:
                 self.iPrint(
                     ["NL it.", "Norm(res)", "Max(|res|)"],
                     [it_NL, residuNorm, residuMax],
@@ -690,10 +690,11 @@ class MMAClient(object):
             fapp = np.array([fapp])
             new_fval = np.array([new_fval])
 
-        tolerance = 1e-2
+        tolerance = 1e-3
 
         condition = False
         for fapp_i, new_fval_i in zip(fapp, new_fval):
+            print(f"condition: fapp {fapp_i}, new_fval {new_fval_i}")
             if fapp_i + tolerance >= new_fval_i:
                 condition = True
             else:

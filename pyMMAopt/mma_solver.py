@@ -337,7 +337,7 @@ class MMASolver(OptimizationSolver):
             PETSc.Sys.Print(
                 *(map("g[{0[0]}]: {0[1][0]} ".format, enumerate(g0val))), end=""
             )
-            PETSc.Sys.Print(" Inner iterations: {:d}".format(inner_it), end="")
+            # PETSc.Sys.Print(" Inner iterations: {:d}".format(inner_it), end="")
             PETSc.Sys.Print(" kkt: {:6f}".format(kkt_norm), end="")
             PETSc.Sys.Print(" change: {:.6f}".format(change))
 
