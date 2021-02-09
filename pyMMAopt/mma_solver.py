@@ -1,8 +1,5 @@
-# from fenics_adjoint import *
 from pyadjoint.adjfloat import AdjFloat
-from pyadjoint.reduced_functional_numpy import ReducedFunctionalNumPy
 from pyadjoint.optimization.optimization_solver import OptimizationSolver
-from pyadjoint.reduced_functional_numpy import gather
 from firedrake import (
     PETSc,
     Function,
@@ -82,6 +79,10 @@ class MMASolver(OptimizationSolver):
         passed in, if any."""
         param_defaults = {
             "m": 1,
+            "n": 1,
+            "xmax": False,
+            "xmin": False,
+            "Mdiag": False,
             "tol": 1e-8,
             "accepted_tol": 1e-4,
             "maximum_iterations": 100,
@@ -100,6 +101,9 @@ class MMASolver(OptimizationSolver):
             "d": [],
             "IP": 0,
             "norm": "l2",
+            "gcmma": False,
+            "output_dir": "./",
+            "restart_file": False,
         }
         if self.parameters is not None:
             for key in self.parameters.keys():
@@ -238,31 +242,27 @@ class MMASolver(OptimizationSolver):
 
         change = 1.0
         loop = 1
-        tol = self.parameters["tol"]
-        accepted_tol = self.parameters["accepted_tol"]
+        parameters = self.parameters
+        tol = parameters["tol"]
+        accepted_tol = parameters["accepted_tol"]
         # Initial estimation
         control_function = self.rf.controls[0].control
+        if parameters["restart_file"]:
+            with HDF5File(parameters["restart_file"], "r") as checkpoint:
+                checkpoint.read(control_function, "/checkpoint")
         with control_function.dat.vec_ro as control_vec:
             a_np = control_vec.array
 
-        def receive_signal(signum, stack):
-            print(f"SIGNAL RECEIVED!!!!!!!!!!!!!!")
-            with HDF5File(output_dir + "/final_design", "w") as checkpoint:
-                checkpoint.write(hs_rho_viz, "/final_design")
-
-        signal.signal(signal.SIGUSR1, receive_signal)
-
         import numpy as np
 
-        self.parameters["xmin"] = self.lb
-        self.parameters["xmax"] = self.ub
-        self.parameters["n"] = control_function.function_space().dim()
-        self.parameters["Mdiag"] = self.Mdiag
-        self.parameters["gcmma"] = True
-        itermax = self.parameters["maximum_iterations"]
+        parameters["xmin"] = self.lb
+        parameters["xmax"] = self.ub
+        parameters["n"] = control_function.function_space().dim()
+        parameters["Mdiag"] = self.Mdiag
+        itermax = parameters["maximum_iterations"]
 
         # Create an optimizer client
-        clientOpt = MMAClient(self.parameters)
+        clientOpt = MMAClient(parameters)
         #'asyinit':0.2,'asyincr':0.8,'asydecr':0.3
 
         xold1 = np.copy(a_np)
@@ -273,6 +273,14 @@ class MMASolver(OptimizationSolver):
         change_arr = []
 
         a_function = control_function.copy(deepcopy=True)
+
+        def receive_signal(signum, stack):
+            with HDF5File(
+                f"{parameters['output_dir']}/checkpoint.h5", "w"
+            ) as checkpoint:
+                checkpoint.write(a_function, "/checkpoint")
+
+        signal.signal(signal.SIGUSR1, receive_signal)
 
         def eval_f(a_np):
             with a_function.dat.vec as a_vec:
