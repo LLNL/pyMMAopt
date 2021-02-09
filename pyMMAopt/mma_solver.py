@@ -249,6 +249,7 @@ class MMASolver(OptimizationSolver):
         self.parameters["xmax"] = self.ub
         self.parameters["n"] = control_function.function_space().dim()
         self.parameters["Mdiag"] = self.Mdiag
+        self.parameters["gcmma"] = True
         itermax = self.parameters["maximum_iterations"]
 
         # Create an optimizer client

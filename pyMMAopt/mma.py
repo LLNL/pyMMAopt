@@ -72,6 +72,7 @@ class MMAClient(object):
             "d": [],
             "IP": 0,
             "Mdiag": None,
+            "gcmma": True,
         }
 
         # create the attributes
@@ -626,16 +627,16 @@ class MMAClient(object):
         ux2 = ux1 * ux1
         xl1 = xval - low
         xl2 = xl1 * xl1
-        p0 = np.maximum(df0dx, 0)
-        q0 = np.maximum(-df0dx, 0)
+        p0 = np.maximum(df0dx, 0.0)
+        q0 = np.maximum(-df0dx, 0.0)
         pq0 = 0.001 * (p0 + q0) + rho0 * xmamiinv * self.Mdiag
         p0 = p0 + pq0
         q0 = q0 + pq0
         p0 = p0 * ux2
         q0 = q0 * xl2
 
-        P = np.maximum(dfdx, 0)
-        Q = np.maximum(-dfdx, 0)
+        P = np.maximum(dfdx, 0.0)
+        Q = np.maximum(-dfdx, 0.0)
         PQ = (
             0.001 * (P + Q)
             + rhoi * np.ones([self.m, 1]) * xmamiinv[np.newaxis, :] * self.Mdiag
@@ -658,6 +659,8 @@ class MMAClient(object):
     def calculate_initial_rho(self, dfdx, xmax, xmin):
         local_rho = np.dot(np.abs(dfdx), xmax - xmin)
         rho = 0.1 / self.volume * self.comm.allreduce(local_rho, op=MPI.SUM)
+        if self.gcmma == False:
+            rho = 1e-5
         return rho
 
     def calculate_rho(self, rho, new_fval, fapp, x_inner, x_outer, low, upp):
@@ -669,6 +672,7 @@ class MMAClient(object):
                 / ((upp - x_inner) * (x_inner - low) * (self.xmax - self.xmin))
             ),
         )
+        denom = self.comm.allreduce(denom, op=MPI.SUM)
         delta = (new_fval - fapp) / denom
 
         if delta > 0:
@@ -690,7 +694,7 @@ class MMAClient(object):
             fapp = np.array([fapp])
             new_fval = np.array([new_fval])
 
-        tolerance = 1e-3
+        tolerance = 1e-8
 
         condition = False
         for fapp_i, new_fval_i in zip(fapp, new_fval):
@@ -764,8 +768,9 @@ class MMAClient(object):
             fapp = self.convex_approximation(x_inner, P, Q, b, low, upp)
 
             assert fapp.size == new_fval.size
-            if self.condition_check(f0app, new_f0val) and self.condition_check(
-                fapp, new_fval
+            if self.gcmma == False or (
+                self.condition_check(f0app, new_f0val)
+                and self.condition_check(fapp, new_fval)
             ):
                 break
             else:
