@@ -2,6 +2,7 @@ from firedrake import *
 from firedrake.petsc import PETSc
 from firedrake_adjoint import *
 from pyMMAopt import MMASolver
+import os
 
 print = lambda x: PETSc.Sys.Print(x, comm=COMM_SELF)
 
@@ -16,7 +17,7 @@ parser.add_argument(
     dest="n_vars",
     type=int,
     help="Number of design variables",
-    default=100,
+    default=200,
 )
 args = parser.parse_args()
 n_vars = args.n_vars
@@ -93,7 +94,7 @@ problem = MinimizationProblem(
 
 parameters_mma = {
     "move": 0.1,
-    "maximum_iterations": 100,
+    "maximum_iterations": 5,
     "m": 1,
     "IP": 0,
     "tol": 1e-9,

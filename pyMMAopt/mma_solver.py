@@ -12,9 +12,11 @@ from firedrake import (
     TestFunction,
     Constant,
 )
-from firedrake import COMM_SELF
+from firedrake import COMM_SELF, HDF5File
 from mpi4py import MPI
 import time
+import signal
+
 
 try:
     from .mma import MMAClient
@@ -242,6 +244,13 @@ class MMASolver(OptimizationSolver):
         control_function = self.rf.controls[0].control
         with control_function.dat.vec_ro as control_vec:
             a_np = control_vec.array
+
+        def receive_signal(signum, stack):
+            print(f"SIGNAL RECEIVED!!!!!!!!!!!!!!")
+            with HDF5File(output_dir + "/final_design", "w") as checkpoint:
+                checkpoint.write(hs_rho_viz, "/final_design")
+
+        signal.signal(signal.SIGUSR1, receive_signal)
 
         import numpy as np
 

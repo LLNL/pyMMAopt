@@ -4,7 +4,7 @@ from scipy.sparse import spdiags
 import time
 from firedrake.petsc import PETSc
 from mpi4py import MPI
-from firedrake import COMM_SELF
+from firedrake import COMM_SELF, warning
 
 
 print = lambda x: PETSc.Sys.Print(x, comm=COMM_SELF)
@@ -561,6 +561,9 @@ class MMAClient(object):
                     steg /= 2.0
                     itto += 1
 
+                    if itto > 198:
+                        warning(f"Line search iteration limit {itto} reached")
+
                 self.iPrint(
                     ["relax. it.", "Norm(res)", "step"], [itto, resinewNorm, steg], 2
                 )
@@ -571,7 +574,7 @@ class MMAClient(object):
                 it_NL += 1
 
             if it_NL > 198:
-                self.iPrint(["it limit", "with epsilon"], [it_NL, epsi], 0)
+                warning(f"Iteration limit of the Newton solver ({it_NL}) reached")
             epsi *= 0.1
             epsiIt += 1
 
