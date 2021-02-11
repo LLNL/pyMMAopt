@@ -45,12 +45,12 @@ def deriv_cb(j, dj, rho):
 
 
 J = assemble(Constant(1e4) * rho * rho * dx)
-G = AdjFloat(1.0) / assemble(rho * dx)
+G = assemble(rho * dx)
 m = Control(rho)
 Jhat = ReducedFunctional(J, m, derivative_cb_post=deriv_cb)
 Ghat = ReducedFunctional(G, m)
 total_area = assemble(Constant(1.0) * dx(domain=mesh), annotate=False)
-Glimit = 1.0 / (total_area / 2.0)
+Glimit = total_area * 20.0
 Gcontrol = Control(G)
 
 
