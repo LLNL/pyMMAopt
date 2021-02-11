@@ -83,6 +83,7 @@ class MMAClient(object):
         self.xmax = np.array(self.xmax)
         self.comm = MPI.COMM_WORLD
 
+        # TODO if there are two variables per cell, the volume will be twice as big
         local_volume = np.sum(self.Mdiag)
         self.volume = self.comm.allreduce(local_volume, op=MPI.SUM)
         print(f"Volume for MMA is: {self.volume}")
@@ -445,7 +446,7 @@ class MMAClient(object):
                 )
 
                 # assemble and solve the system: dlam or dx
-                if self.m < self.local_n:
+                if self.m <= self.local_n:
                     diagxinvGG = diagxinv * GG
                     AA = self.JacDual(diagxinvGG, diaglamyi, GG, z, zet)
                     bb = self.RHSdual(dellam, delx, dely, delz, diagxinvGG, diagy, GG)
@@ -641,8 +642,7 @@ class MMAClient(object):
         P = np.maximum(dfdx, 0.0)
         Q = np.maximum(-dfdx, 0.0)
         PQ = (
-            0.001 * (P + Q)
-            + rhoi * np.ones([self.m, 1]) * xmamiinv[np.newaxis, :] * self.Mdiag
+            0.001 * (P + Q) + rhoi[:, np.newaxis] * xmamiinv[np.newaxis, :] * self.Mdiag
         )
         P = ne.evaluate("ux2 * (P + PQ)")
         Q = ne.evaluate("xl2 * (Q + PQ)")
@@ -663,7 +663,10 @@ class MMAClient(object):
         local_rho = np.dot(np.abs(dfdx), xmax - xmin)
         rho = 0.1 / self.volume * self.comm.allreduce(local_rho, op=MPI.SUM)
         if self.gcmma == False:
-            rho = 1e-5
+            if isinstance(rho, np.ndarray):
+                rho.fill(1e-5)
+            else:
+                rho = 1e-5
         return rho
 
     def calculate_rho(self, rho, new_fval, fapp, x_inner, x_outer, low, upp):
@@ -678,14 +681,22 @@ class MMAClient(object):
         denom = self.comm.allreduce(denom, op=MPI.SUM)
         delta = (new_fval - fapp) / denom
 
-        if delta > 0:
-            return min(1.1 * (rho + delta), 10.0 * rho)
-        else:
-            return rho
+        if not isinstance(fapp, np.ndarray):
+            delta = np.array([delta])
+            rho
+
+        return np.where(
+            delta > 0,
+            np.minimum(1.1 * (rho + delta), 10.0 * rho),
+            rho,
+        )
 
     def convex_approximation(self, x_inner, p, q, b, low, upp):
         # TODO do we need to add rho?
-        local_fapp = np.sum(p / (upp - x_inner) + q / (x_inner - low))
+        if len(p.shape) > 1:
+            local_fapp = np.sum(p / (upp - x_inner) + q / (x_inner - low), 1)
+        else:
+            local_fapp = np.sum(p / (upp - x_inner) + q / (x_inner - low))
         fapp = self.comm.allreduce(local_fapp, op=MPI.SUM) - b
         return fapp
 
@@ -765,7 +776,7 @@ class MMAClient(object):
             )
 
             new_f0val = eval_f(x_inner)
-            new_fval = eval_g(x_inner)
+            new_fval = eval_g(x_inner).flatten()
 
             f0app = self.convex_approximation(x_inner, p0, q0, b0, low, upp)
             fapp = self.convex_approximation(x_inner, P, Q, b, low, upp)

@@ -64,14 +64,14 @@ class MMASolver(OptimizationSolver):
                 diagonal=True,
             ).dat.data_ro
         else:
-            self.Mdiag = numpy.ones(len(self.rf.controls[0].control.dat.data_ro))
+            self.Mdiag = numpy.ones(self.rf.controls[0].control.dat.data_ro.size)
 
         self.__build_mma_problem()
         self.__set_parameters()
 
         self.change = 0.0
         self.f0val = 0.0
-        self.g0val = [[0.0] for _ in range(self.m)]
+        self.g0val = [[0.0] for _ in range(parameters["m"])]
         self.loop = 0
 
     def __set_parameters(self):
@@ -126,20 +126,9 @@ class MMASolver(OptimizationSolver):
         assert isinstance(
             self.rf.controls[0].control, Function
         ), "Only control of type Function is possible for MMA"
-        control = self.rf.controls[0]
-        n_local_control = len(
-            control.control.dat.data_ro
-        )  # There is another function: dat.data_ro_with_halos (might be useful)
 
         (self.lb, self.ub) = self.__get_bounds()
         (nconstraints, self.fun_g, self.jac_g) = self.__get_constraints()
-
-        self.n = n_local_control
-        self.m = nconstraints
-        # if isinstance(self.problem, MaximizationProblem):
-        # multiply objective function by -1 internally in
-        # ipopt to maximise instead of minimise
-        # nlp.num_option('obj_scaling_factor', -1.0)
 
     def __get_bounds(self):
         r"""Convert the bounds into the format accepted by MMA (two numpy arrays,
@@ -155,9 +144,7 @@ class MMASolver(OptimizationSolver):
                 general_lb, general_ub = bound  # could be float, Constant, or Function
 
                 if isinstance(control.control, Function):
-                    n_local_control = len(
-                        control.control.dat.data_ro
-                    )  # There is another function: dat.data_ro_with_halos (might be useful)
+                    n_local_control = control.control.dat.data_ro.size
                 elif isinstance(control.control, Constant) or isinstance(
                     control.control, AdjFloat
                 ):
@@ -257,7 +244,7 @@ class MMASolver(OptimizationSolver):
 
         parameters["xmin"] = self.lb
         parameters["xmax"] = self.ub
-        parameters["n"] = control_function.function_space().dim()
+        parameters["n"] = control_function.dat.data_ro.size
         parameters["Mdiag"] = self.Mdiag
         itermax = parameters["maximum_iterations"]
 
@@ -293,15 +280,17 @@ class MMASolver(OptimizationSolver):
                 a_vec.array_w = a_np
             return -1.0 * self.fun_g(a_function)
 
-        dg0dx = np.empty([self.m, self.n])
-        df0dx = np.empty([self.n])
+        n = parameters["n"]
+        m = parameters["m"]
+        dg0dx = np.empty([m, n])
+        df0dx = np.empty([n])
         comm = MPI.COMM_WORLD
         rank = comm.Get_rank()
         while change > tol and loop <= itermax:
             t0 = time.time()
             # Cost functions
             f0val = eval_f(a_np)
-            g0val = eval_g(a_np)
+            g0val = eval_g(a_np).flatten()
 
             # Gradients
             df0dx_func = self.rf.derivative()
@@ -353,7 +342,7 @@ class MMASolver(OptimizationSolver):
 
             PETSc.Sys.Print("It: {it}, obj: {obj} ".format(it=loop, obj=f0val), end="")
             PETSc.Sys.Print(
-                *(map("g[{0[0]}]: {0[1][0]} ".format, enumerate(g0val))), end=""
+                "".join([f"g[{index}]: {value} " for index, value in enumerate(g0val)])
             )
             # PETSc.Sys.Print(" Inner iterations: {:d}".format(inner_it), end="")
             PETSc.Sys.Print(" kkt: {:6f}".format(kkt_norm), end="")
