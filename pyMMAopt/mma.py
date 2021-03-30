@@ -796,4 +796,19 @@ class MMAClient(object):
 
             inner_it += 1
 
-        return x_inner, y, z, lam, xsi, eta, mu, zet, s, low, upp, factor
+        return (
+            x_inner,
+            y,
+            z,
+            lam,
+            xsi,
+            eta,
+            mu,
+            zet,
+            s,
+            low,
+            upp,
+            factor,
+            new_f0val,
+            new_fval,
+        )

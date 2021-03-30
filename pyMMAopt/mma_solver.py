@@ -286,11 +286,13 @@ class MMASolver(OptimizationSolver):
         df0dx = np.empty([n])
         comm = MPI.COMM_WORLD
         rank = comm.Get_rank()
+
+        f0val = eval_f(a_np)
+        g0val = eval_g(a_np).flatten()
+
         while change > tol and loop <= itermax:
             t0 = time.time()
             # Cost functions
-            f0val = eval_f(a_np)
-            g0val = eval_g(a_np).flatten()
 
             # Gradients
             df0dx_func = self.rf.derivative()
@@ -307,7 +309,22 @@ class MMASolver(OptimizationSolver):
             clientOpt.xmin = self.lb
             clientOpt.xmax = self.ub
 
-            xmma, y, z, lam, xsi, eta, mu, zet, s, low, upp, factor = clientOpt.mma(
+            (
+                xmma,
+                y,
+                z,
+                lam,
+                xsi,
+                eta,
+                mu,
+                zet,
+                s,
+                low,
+                upp,
+                factor,
+                f0val,
+                g0val,
+            ) = clientOpt.mma(
                 a_np,
                 xold1,
                 xold2,
