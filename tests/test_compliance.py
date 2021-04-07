@@ -7,10 +7,7 @@ from pyMMAopt import MMASolver, ReducedInequality
 
 @pytest.mark.parametrize(
     "norm,result",
-    [
-        # ["l2", 7.454771069410802],
-        ["L2", 7.420380654729631]
-    ],
+    [["l2", 7.454771069410802], ["L2", 7.420380654729631]],
 )
 def test_compliance(norm, result):
     mesh = RectangleMesh(100, 30, 10, 3)

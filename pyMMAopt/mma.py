@@ -83,7 +83,8 @@ class MMAClient(object):
         self.xmax = np.array(self.xmax)
         self.comm = MPI.COMM_WORLD
 
-        # TODO if there are two variables per cell, the volume will be twice as big
+        # TODO if there are two variables per cell, the volume will be twice as big...
+        # So far, this is not allowed by the element check in MMASolver
         local_volume = np.sum(self.Mdiag)
         self.volume = self.comm.allreduce(local_volume, op=MPI.SUM)
         print(f"Volume for MMA is: {self.volume}")
@@ -119,7 +120,6 @@ class MMAClient(object):
         mu_max = np.where(residual_gradients < 0.0, -residual_gradients, 0.0)
         mu_max *= (self.xmax - x) * np.sqrt(self.Mdiag)
         norm2_grad = mu_min ** 2 + mu_max ** 2
-        # TODO reduce
         local_norm2 = np.sum(norm2_grad)
         norm2 = self.comm.allreduce(local_norm2, op=MPI.SUM)
 
@@ -176,9 +176,7 @@ class MMAClient(object):
             return residuMax
 
         # rex
-        local_residu_x = ne.evaluate(
-            "(dpsidx * Mdiag - Mdiag*xsi + Mdiag*eta)"
-        )  # TODO weight the xsi and eta with the mass matrix
+        local_residu_x = ne.evaluate("(dpsidx * Mdiag - Mdiag*xsi + Mdiag*eta)")
         residu_x_norm = global_res_norm_square(
             ne.evaluate("local_residu_x / sqrt(Mdiag)")
         )  # This components is in the dual space, the norm has
@@ -194,7 +192,7 @@ class MMAClient(object):
         residu_z_norm = residu_z ** 2
         residu_z_max = np.abs(residu_z)
         # relam
-        residu_lam = gvec - self.a * z - y + s - b
+        residu_lam = gvec - self.a * z - y + s + b
         residu_lam_norm = np.sum(residu_lam ** 2)
         residu_lam_max = np.linalg.norm(residu_lam, np.inf)
         # rexsi
@@ -270,15 +268,15 @@ class MMAClient(object):
         dpsidx = ne.evaluate("plam * uxinv2 - qlam * xlinv2")
         delx = ne.evaluate(
             "dpsidx * Mdiag - Mdiag * epsi * invxalpha + Mdiag * epsi * invxbeta"
-        )  # TODO mass matrix for xsi and eta
+        )
         diagx = ne.evaluate(
             "2 * (plam / ux3 + qlam / xl3) * Mdiag + Mdiag * xsi * invxalpha + Mdiag * eta * invxbeta"
-        )  # TODO mass matrix for xsi and eta
+        )
         diagxinv = 1.0 / diagx
 
         dely = self.c + self.d * y - lam - epsi / y
         delz = self.a0 - np.dot(self.a, lam) - epsi / z
-        dellam = gvec - self.a * z - y - b + epsi / lam
+        dellam = gvec - self.a * z - y + b + epsi / lam
         diagy = self.d + mu / y
         diagyinv = 1.0 / diagy
         diaglam = s / lam
@@ -483,9 +481,7 @@ class MMAClient(object):
                 # relaxation of the newton step for staying in feasible region
                 len_xx = self.local_n * 2 + self.m * 4 + 2
                 xx = np.zeros(len_xx)
-                np.concatenate(
-                    (y, [z], lam, xsi, eta, mu, [zet], s), out=xx
-                )  # TODO probably it is not necessary to concatenate if you calculate the step separately
+                np.concatenate((y, [z], lam, xsi, eta, mu, [zet], s), out=xx)
                 dxx = np.zeros(len_xx)
                 np.concatenate((dy, [dz], dlam, dxsi, deta, dmu, [dzet], ds), out=dxx)
 
@@ -647,12 +643,10 @@ class MMAClient(object):
         xl1inv = ne.evaluate("1.0 / xl1")
 
         local_b0 = np.dot(p0 * self.Mdiag, ux1inv) + np.dot(q0 * self.Mdiag, xl1inv)
-        # TODO In the paper, the signs are flipped, this can lead to bugs...
-        b0 = self.comm.allreduce(local_b0, op=MPI.SUM) - f0val
+        b0 = -self.comm.allreduce(local_b0, op=MPI.SUM) + f0val
 
         local_b = np.dot(P * self.Mdiag, ux1inv) + np.dot(Q * self.Mdiag, xl1inv)
-        # TODO In the paper, the signs are flipped, this can lead to bugs...
-        b = self.comm.allreduce(local_b, op=MPI.SUM) - fval.T
+        b = -self.comm.allreduce(local_b, op=MPI.SUM) + fval.T
 
         return p0, q0, P, Q, b0, b
 
@@ -689,7 +683,6 @@ class MMAClient(object):
         )
 
     def convex_approximation(self, x_inner, p, q, b, low, upp):
-        # TODO do we need to add rho?
         if len(p.shape) > 1:
             local_fapp = np.sum(
                 self.Mdiag * p / (upp - x_inner) + self.Mdiag * q / (x_inner - low), 1
@@ -698,7 +691,7 @@ class MMAClient(object):
             local_fapp = np.sum(
                 self.Mdiag * p / (upp - x_inner) + self.Mdiag * q / (x_inner - low)
             )
-        fapp = self.comm.allreduce(local_fapp, op=MPI.SUM) - b
+        fapp = self.comm.allreduce(local_fapp, op=MPI.SUM) + b
         return fapp
 
     def condition_check(self, fapp, new_fval):
@@ -737,7 +730,6 @@ class MMAClient(object):
         eval_f=None,
         eval_g=None,
     ):
-        # TODO clean up iter?
 
         # Calculation of the asymptotes low and upp
         low, upp = self.moveAsymp(xval, xold1, xold2, low, upp, iter)
@@ -747,20 +739,6 @@ class MMAClient(object):
 
         rho0 = self.calculate_initial_rho(df0dx, self.xmax, self.xmin)
         rhoi = self.calculate_initial_rho(dfdx, self.xmax, self.xmin)
-
-        ## Outer iteration
-        # - Fix asymptotes, alfa and beta
-        # - Initial rho
-        # - Gradients
-        # - TODO Calculate the function? Maybe you can let the inner iteration take care of it to avoid repeated expensive calls
-
-        ## Inner iterations will:
-        # - Generate the subproblem with the given rho values
-        # - Solve the subproblem
-        # - Calculate the function approximation with the new solution
-        # - Re-evaluate the real cost function with the new solution
-        # - Check that the GCMMA condition is satisfied
-        # - Recalculate rho if necessary
 
         inner_it_max = 100
         inner_it = 0
