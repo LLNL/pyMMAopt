@@ -118,7 +118,6 @@ def test_compliance(norm, result):
         "accepted_tol": 1e-4,
         "gcmma": True,
         "norm": norm,
-        "IP": 3,
     }
     solver = MMASolver(problem, parameters=parameters_mma)
 

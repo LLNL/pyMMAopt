@@ -161,7 +161,7 @@ class MMAClient(object):
         xlinv1 = 1.0 / xl1
         plam = p0 + np.dot(P.T, lam)
         qlam = q0 + np.dot(Q.T, lam)
-        local_gvec = P.dot(uxinv1) + Q.dot(xlinv1)
+        local_gvec = (P * self.Mdiag).dot(uxinv1) + (Q * self.Mdiag).dot(xlinv1)
         gvec = self.comm.allreduce(local_gvec, op=MPI.SUM)
         dpsidx = ne.evaluate("plam / ux2 - qlam / xl2")
 
@@ -177,7 +177,7 @@ class MMAClient(object):
 
         # rex
         local_residu_x = ne.evaluate(
-            "(dpsidx - Mdiag*xsi + Mdiag*eta)"
+            "(dpsidx * Mdiag - Mdiag*xsi + Mdiag*eta)"
         )  # TODO weight the xsi and eta with the mass matrix
         residu_x_norm = global_res_norm_square(
             ne.evaluate("local_residu_x / sqrt(Mdiag)")
@@ -263,17 +263,16 @@ class MMAClient(object):
         xlinv2 = 1.0 / xl2
         plam = p0 + lam.dot(P)
         qlam = q0 + lam.dot(Q)
-        local_gvec = P.dot(uxinv1) + Q.dot(xlinv1)
+        local_gvec = (P * self.Mdiag).dot(uxinv1) + (Q * self.Mdiag).dot(xlinv1)
         gvec = self.comm.allreduce(local_gvec, op=MPI.SUM)
-        GG = ne.evaluate("uxinv2 * P - xlinv2 * Q")
-        dpsidx = ne.evaluate("plam * uxinv2 - qlam * xlinv2")
         Mdiag = self.Mdiag
+        GG = ne.evaluate("uxinv2 * P * Mdiag - xlinv2 * Q * Mdiag")
+        dpsidx = ne.evaluate("plam * uxinv2 - qlam * xlinv2")
         delx = ne.evaluate(
-            "dpsidx - Mdiag * epsi * invxalpha + Mdiag * epsi * invxbeta"
+            "dpsidx * Mdiag - Mdiag * epsi * invxalpha + Mdiag * epsi * invxbeta"
         )  # TODO mass matrix for xsi and eta
-        diagx = ne.evaluate("plam / ux3 + qlam / xl3")
         diagx = ne.evaluate(
-            "2 * diagx + Mdiag * xsi * invxalpha + Mdiag * eta * invxbeta"
+            "2 * (plam / ux3 + qlam / xl3) * Mdiag + Mdiag * xsi * invxalpha + Mdiag * eta * invxbeta"
         )  # TODO mass matrix for xsi and eta
         diagxinv = 1.0 / diagx
 
@@ -633,7 +632,7 @@ class MMAClient(object):
         xl2 = xl1 * xl1
         p0 = np.maximum(df0dx, 0.0)
         q0 = np.maximum(-df0dx, 0.0)
-        pq0 = 0.001 * (p0 + q0) + rho0 * xmamiinv * self.Mdiag
+        pq0 = 0.001 * (p0 + q0) + rho0 * xmamiinv
         p0 = p0 + pq0
         q0 = q0 + pq0
         p0 = p0 * ux2
@@ -641,19 +640,17 @@ class MMAClient(object):
 
         P = np.maximum(dfdx, 0.0)
         Q = np.maximum(-dfdx, 0.0)
-        PQ = (
-            0.001 * (P + Q) + rhoi[:, np.newaxis] * xmamiinv[np.newaxis, :] * self.Mdiag
-        )
+        PQ = 0.001 * (P + Q) + rhoi[:, np.newaxis] * xmamiinv[np.newaxis, :]
         P = ne.evaluate("ux2 * (P + PQ)")
         Q = ne.evaluate("xl2 * (Q + PQ)")
         ux1inv = ne.evaluate("1.0 / ux1")
         xl1inv = ne.evaluate("1.0 / xl1")
 
-        local_b0 = np.dot(p0, ux1inv) + np.dot(q0, xl1inv)
+        local_b0 = np.dot(p0 * self.Mdiag, ux1inv) + np.dot(q0 * self.Mdiag, xl1inv)
         # TODO In the paper, the signs are flipped, this can lead to bugs...
         b0 = self.comm.allreduce(local_b0, op=MPI.SUM) - f0val
 
-        local_b = np.dot(P, ux1inv) + np.dot(Q, xl1inv)
+        local_b = np.dot(P * self.Mdiag, ux1inv) + np.dot(Q * self.Mdiag, xl1inv)
         # TODO In the paper, the signs are flipped, this can lead to bugs...
         b = self.comm.allreduce(local_b, op=MPI.SUM) - fval.T
 
@@ -694,9 +691,13 @@ class MMAClient(object):
     def convex_approximation(self, x_inner, p, q, b, low, upp):
         # TODO do we need to add rho?
         if len(p.shape) > 1:
-            local_fapp = np.sum(p / (upp - x_inner) + q / (x_inner - low), 1)
+            local_fapp = np.sum(
+                self.Mdiag * p / (upp - x_inner) + self.Mdiag * q / (x_inner - low), 1
+            )
         else:
-            local_fapp = np.sum(p / (upp - x_inner) + q / (x_inner - low))
+            local_fapp = np.sum(
+                self.Mdiag * p / (upp - x_inner) + self.Mdiag * q / (x_inner - low)
+            )
         fapp = self.comm.allreduce(local_fapp, op=MPI.SUM) - b
         return fapp
 
@@ -763,6 +764,9 @@ class MMAClient(object):
 
         inner_it_max = 100
         inner_it = 0
+        # Apply Riesz map to the gradients
+        df0dx /= self.Mdiag
+        dfdx /= self.Mdiag
         while inner_it < inner_it_max:
             # generate subproblem
             p0, q0, P, Q, b0, b = self.mmasubMat(
