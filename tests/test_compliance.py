@@ -1,10 +1,18 @@
 from firedrake import *
 from firedrake_adjoint import *
+import pytest
 
 from pyMMAopt import MMASolver, ReducedInequality
 
 
-def test_compliance():
+@pytest.mark.parametrize(
+    "norm,result",
+    [
+        # ["l2", 7.454771069410802],
+        ["L2", 7.420380654729631]
+    ],
+)
+def test_compliance(norm, result):
     mesh = RectangleMesh(100, 30, 10, 3)
 
     V = VectorFunctionSpace(mesh, "CG", 1)
@@ -75,6 +83,14 @@ def test_compliance():
         return rhof, u_sol
 
     rhof, u_sol = forward(rho)
+    solution_pvd = File("compliance_design.pvd")
+    rho_viz = Function(RHO)
+
+    def deriv_cb(j, dj, rho):
+        with stop_annotating():
+            rho_viz.assign(rho)
+            solution_pvd.write(rho_viz)
+
     J = assemble(Constant(1e-4) * inner(u_sol, load) * ds(NEUMANN))
     Vol = assemble(rhof * dx)
     VolControl = Control(Vol)
@@ -82,12 +98,7 @@ def test_compliance():
     with stop_annotating():
         Vlimit = assemble(Constant(1.0) * dx(domain=mesh)) * 0.5
 
-    rho_viz_f = Function(RHO, name="rho")
-    plot_file = f"design.pvd"
-    print(plot_file)
-    controls_f = File(plot_file)
-
-    Jhat = ReducedFunctional(J, c)
+    Jhat = ReducedFunctional(J, c, derivative_cb_post=deriv_cb)
     Volhat = ReducedFunctional(Vol, c)
 
     lb = 0.0
@@ -106,6 +117,7 @@ def test_compliance():
         "tol": 1e-6,
         "accepted_tol": 1e-4,
         "gcmma": True,
+        "norm": norm,
     }
     solver = MMASolver(problem, parameters=parameters_mma)
 
@@ -113,4 +125,8 @@ def test_compliance():
 
     final_cost_func = Jhat(rho_opt)
 
-    assert np.allclose(final_cost_func, 7.454771069410802, rtol=1e-5)
+    assert np.allclose(final_cost_func, result, rtol=1e-5)
+
+
+if __name__ == "__main__":
+    test_compliance("L2", 7.420380654729631)
