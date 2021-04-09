@@ -99,6 +99,10 @@ class MMAClient(object):
         for (prop, default) in param_defaults.items():
             setattr(self, prop, parameters.get(prop, default))
         self.local_n = len(self.xmin)
+        if self.m >= self.local_n:
+            raise RuntimeError(
+                "This MMA implementation only handles a number of constraints smaller than the number of design variables"
+            )
         self.xmin = np.array(self.xmin)
         self.xmax = np.array(self.xmax)
         self.comm = MPI.COMM_WORLD
@@ -471,19 +475,14 @@ class MMAClient(object):
                 )
 
                 # assemble and solve the system: dlam or dx
-                if self.m <= self.local_n:
-                    diagxinvGG = diagxinv * GG
-                    AA = self.JacDual(diagxinvGG, diaglamyi, GG, z, zet)
-                    bb = self.RHSdual(dellam, delx, dely, delz, diagxinvGG, diagy, GG)
-                    solut = np.linalg.solve(AA, bb)
-                    dlam = solut[0 : self.m]
-                    dz = solut[self.m]
-                    # dx2 = - delx*diagxinv - np.transpose(GG).dot(dlam)/diagx
-                    dx = -delx * diagxinv - np.dot((diagxinv * GG).T, dlam)
-                else:
-                    raise RuntimeError(
-                        "This MMA implementation only handles a number of constraints smaller than the number of design variables"
-                    )
+                diagxinvGG = diagxinv * GG
+                AA = self.JacDual(diagxinvGG, diaglamyi, GG, z, zet)
+                bb = self.RHSdual(dellam, delx, dely, delz, diagxinvGG, diagy, GG)
+                solut = np.linalg.solve(AA, bb)
+
+                dlam = solut[0 : self.m]
+                dz = solut[self.m]
+                dx = -delx * diagxinv - np.dot((diagxinv * GG).T, dlam)
                 dy = -dely / diagy + dlam / diagy
                 dxsi = ne.evaluate(
                     "-xsi +  epsi / (x - alfa) - (xsi * dx) / (x - alfa)"
