@@ -1,4 +1,5 @@
 import numpy as np
+import copy
 import numexpr as ne
 from scipy.sparse import spdiags
 import time
@@ -8,6 +9,25 @@ from firedrake import COMM_SELF, warning
 
 
 print = lambda x: PETSc.Sys.Print(x, comm=COMM_SELF)
+
+
+class DesignState(object):
+    state_args = [
+        "x",
+        "y",
+        "z",
+        "lam",
+        "xsi",
+        "eta",
+        "mu",
+        "zet",
+        "s",
+    ]
+
+    def __init__(self, *args, **kwargs):
+        for k, v in kwargs.items():
+            assert k in self.state_args, f"Variable {k} is not admitted"
+            setattr(self, k, v)
 
 
 class MMAClient(object):
@@ -141,17 +161,20 @@ class MMAClient(object):
         P,
         Q,
         b,
-        x,
-        y,
-        z,
-        lam,
-        xsi,
-        eta,
-        mu,
-        zet,
-        s,
+        design_state,
         epsi,
     ):
+        x = design_state.x
+        y = design_state.y
+        z = design_state.z
+        lam = design_state.lam
+        xsi = design_state.xsi
+        eta = design_state.eta
+        mu = design_state.mu
+        s = design_state.s
+        zet = design_state.zet
+        z = design_state.z
+
         Mdiag = self.Mdiag
         ux1 = upp - x
         xl1 = x - low
@@ -208,9 +231,9 @@ class MMAClient(object):
         residu_mu_norm = np.sum(residu_mu ** 2)
         residu_mu_max = np.linalg.norm(residu_mu, np.inf)
         # rezet
-        residu_zeta = zet * z - epsi
-        residu_zeta_norm = residu_zeta ** 2
-        residu_zeta_max = np.abs(residu_zeta)
+        residu_zet = zet * z - epsi
+        residu_zet_norm = residu_zet ** 2
+        residu_zet_max = np.abs(residu_zet)
         # res
         residu_s = lam * s - epsi
         residu_s_norm = np.sum(residu_s ** 2)
@@ -225,7 +248,7 @@ class MMAClient(object):
             + residu_mu_norm
             + residu_s_norm
             + residu_z_norm
-            + residu_zeta_norm
+            + residu_zet_norm
         )
         residu_max = np.max(
             (
@@ -237,15 +260,24 @@ class MMAClient(object):
                 residu_mu_max,
                 residu_s_max,
                 residu_z_max,
-                residu_zeta_max,
+                residu_zet_max,
             )
         )
 
         return residu_norm, residu_max
 
-    def preCompute(
-        self, alfa, beta, low, upp, p0, q0, P, Q, b, x, y, z, lam, xsi, eta, mu, s, epsi
-    ):
+    def preCompute(self, alfa, beta, low, upp, p0, q0, P, Q, b, design_state, epsi):
+        x = design_state.x
+        y = design_state.y
+        z = design_state.z
+        lam = design_state.lam
+        xsi = design_state.xsi
+        eta = design_state.eta
+        mu = design_state.mu
+        s = design_state.s
+        zet = design_state.zet
+        z = design_state.z
+
         # delx,dely,delz,dellam,diagx,diagy,diagxinv,diaglamyi,GG):
         invxalpha = ne.evaluate("1 / (x - alfa)")
         invxbeta = ne.evaluate("1 / (beta - x)")
@@ -311,15 +343,7 @@ class MMAClient(object):
 
     def getNewPoint(
         self,
-        xold,
-        yold,
-        zold,
-        lamold,
-        xsiold,
-        etaold,
-        muold,
-        zetold,
-        sold,
+        design_state_old,
         dx,
         dy,
         dz,
@@ -331,6 +355,17 @@ class MMAClient(object):
         ds,
         step,
     ):
+        xold = design_state_old.x
+        yold = design_state_old.y
+        zold = design_state_old.z
+        lamold = design_state_old.lam
+        xsiold = design_state_old.xsi
+        etaold = design_state_old.eta
+        muold = design_state_old.mu
+        sold = design_state_old.s
+        zetold = design_state_old.zet
+        zold = design_state_old.z
+
         x = xold + step * dx
         y = yold + step * dy
         z = zold + step * dz
@@ -341,7 +376,11 @@ class MMAClient(object):
         zet = zetold + step * dzet
         s = sold + step * ds
 
-        return x, y, z, lam, xsi, eta, mu, zet, s
+        design_state = DesignState(
+            x=x, y=y, z=z, lam=lam, xsi=xsi, eta=eta, mu=mu, zet=zet, s=s
+        )
+
+        return design_state
 
     def subsolvIP(self, alfa, beta, low, upp, p0, q0, P, Q, b):
         """
@@ -371,6 +410,10 @@ class MMAClient(object):
         s = np.ones([self.m])
         epsiIt = 1
 
+        design_state = DesignState(
+            x=x, y=y, z=z, lam=lam, xsi=xsi, eta=eta, mu=mu, zet=zet, s=s
+        )
+
         if self.IP > 0:
             print(str("*" * 80))
 
@@ -388,15 +431,7 @@ class MMAClient(object):
                 P,
                 Q,
                 b,
-                x,
-                y,
-                z,
-                lam,
-                xsi,
-                eta,
-                mu,
-                zet,
-                s,
+                design_state,
                 epsi,
             )
 
@@ -431,14 +466,7 @@ class MMAClient(object):
                     P,
                     Q,
                     b,
-                    x,
-                    y,
-                    z,
-                    lam,
-                    xsi,
-                    eta,
-                    mu,
-                    s,
+                    design_state,
                     epsi,
                 )
 
@@ -468,15 +496,7 @@ class MMAClient(object):
                 ds = -s + epsi / lam - (s * dlam) / lam
 
                 # store variables
-                xold = np.copy(x)
-                yold = np.copy(y)
-                zold = np.copy(z)
-                lamold = np.copy(lam)
-                xsiold = np.copy(xsi)
-                etaold = np.copy(eta)
-                muold = np.copy(mu)
-                zetold = np.copy(zet)
-                sold = np.copy(s)
+                design_state_old = copy.copy(design_state)
 
                 # relaxation of the newton step for staying in feasible region
                 len_xx = self.local_n * 2 + self.m * 4 + 2
@@ -508,16 +528,8 @@ class MMAClient(object):
                         2,
                     )
                     # compute new point
-                    x, y, z, lam, xsi, eta, mu, zet, s = self.getNewPoint(
-                        xold,
-                        yold,
-                        zold,
-                        lamold,
-                        xsiold,
-                        etaold,
-                        muold,
-                        zetold,
-                        sold,
+                    design_state = self.getNewPoint(
+                        design_state_old,
                         dx,
                         dy,
                         dz,
@@ -529,6 +541,16 @@ class MMAClient(object):
                         ds,
                         steg,
                     )
+                    x = design_state.x
+                    y = design_state.y
+                    z = design_state.z
+                    lam = design_state.lam
+                    xsi = design_state.xsi
+                    eta = design_state.eta
+                    mu = design_state.mu
+                    s = design_state.s
+                    zet = design_state.zet
+                    z = design_state.z
 
                     # compute the residual
                     resinewNorm, resinewMax = self.resKKT(
@@ -541,15 +563,7 @@ class MMAClient(object):
                         P,
                         Q,
                         b,
-                        x,
-                        y,
-                        z,
-                        lam,
-                        xsi,
-                        eta,
-                        mu,
-                        zet,
-                        s,
+                        design_state,
                         epsi,
                     )
 
@@ -577,7 +591,7 @@ class MMAClient(object):
         if self.IP > 0:
             print(str("*" * 80))
 
-        return x, y, z, lam, xsi, eta, mu, zet, s
+        return x, y, z, lam
 
     def moveAsymp(self, xval, xold1, xold2, low, upp, iter):
         """
@@ -753,9 +767,7 @@ class MMAClient(object):
             print(f"rho0: {rho0}, rhoi: {rhoi}")
 
             # solve the subproblem
-            x_inner, y, z, lam, xsi, eta, mu, zet, s = self.subsolvIP(
-                alfa, beta, low, upp, p0, q0, P, Q, b
-            )
+            x_inner, y, z, lam = self.subsolvIP(alfa, beta, low, upp, p0, q0, P, Q, b)
 
             new_f0val = eval_f(x_inner)
             new_fval = eval_g(x_inner).flatten()
@@ -783,11 +795,6 @@ class MMAClient(object):
             y,
             z,
             lam,
-            xsi,
-            eta,
-            mu,
-            zet,
-            s,
             low,
             upp,
             factor,
