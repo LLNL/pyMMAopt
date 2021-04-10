@@ -99,7 +99,7 @@ class MMAClient(object):
         for (prop, default) in param_defaults.items():
             setattr(self, prop, parameters.get(prop, default))
         self.local_n = len(self.xmin)
-        if self.m >= self.local_n:
+        if self.m > self.local_n:
             raise RuntimeError(
                 "This MMA implementation only handles a number of constraints smaller than the number of design variables"
             )
