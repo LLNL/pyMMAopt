@@ -2,6 +2,8 @@ from pyadjoint.optimization.constraints import InequalityConstraint
 from firedrake import warning
 from pyadjoint import stop_annotating
 
+from firedrake import PETSc, COMM_WORLD
+print = lambda x: PETSc.Sys.Print(x, comm=COMM_WORLD)
 
 class ReducedInequality(InequalityConstraint):
     """This class represents constraints of the form

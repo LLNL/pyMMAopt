@@ -9,7 +9,7 @@ from firedrake import (
     TestFunction,
     Constant,
 )
-from firedrake import COMM_SELF, HDF5File
+from firedrake import COMM_WORLD, HDF5File
 from mpi4py import MPI
 import time
 import signal
@@ -23,7 +23,7 @@ except ImportError:
 import numpy
 
 
-print = lambda x: PETSc.Sys.Print(x, comm=COMM_SELF)
+print = lambda x: PETSc.Sys.Print(x, comm=COMM_WORLD)
 
 
 class MMASolver(OptimizationSolver):
@@ -100,7 +100,7 @@ class MMASolver(OptimizationSolver):
             "c": [],
             "d": [],
             "IP": 0,
-            "norm": "l2",
+            "norm": "L2",
             "gcmma": False,
             "output_dir": "./",
             "restart_file": False,
