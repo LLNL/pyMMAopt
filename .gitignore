@@ -7,4 +7,8 @@ build/
 .coverage
 .cache/
 *.egg-info/
+*.eggs/
 .pytest_cache/
+*.pvd
+*.vtu
+*.h5

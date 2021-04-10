@@ -1,30 +1,33 @@
-"""
-    mma.py - Copyright (C) 2016 University of Liege
-
-    This program is free software: you can redistribute it and/or modify
-    it under the terms of the GNU General Public License as published by
-    the Free Software Foundation, either version 3 of the License, or
-    (at your option) any later version.
-
-    This program is distributed in the hope that it will be useful,
-    but WITHOUT ANY WARRANTY; without even the implied warranty of
-    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-    GNU General Public License for more details.
-
-    You should have received a copy of the GNU General Public License
-    along with this program.  If not, see <http://www.gnu.org/licenses/>.
-"""
-
 import numpy as np
+import copy
 import numexpr as ne
 from scipy.sparse import spdiags
 import time
 from firedrake.petsc import PETSc
 from mpi4py import MPI
-from firedrake import COMM_SELF
+from firedrake import COMM_SELF, warning
 
 
 print = lambda x: PETSc.Sys.Print(x, comm=COMM_SELF)
+
+
+class DesignState(object):
+    state_args = [
+        "x",
+        "y",
+        "z",
+        "lam",
+        "xsi",
+        "eta",
+        "mu",
+        "zet",
+        "s",
+    ]
+
+    def __init__(self, *args, **kwargs):
+        for k, v in kwargs.items():
+            assert k in self.state_args, f"Variable {k} is not admitted"
+            setattr(self, k, v)
 
 
 class MMAClient(object):
@@ -89,27 +92,26 @@ class MMAClient(object):
             "d": [],
             "IP": 0,
             "Mdiag": None,
-            "_timing": 1,
-            "_elapsedTime": {
-                "resKKT": -1,
-                "preCompute": -1,
-                "JacDual": -1,
-                "RHSdual": -1,
-                "nlIterPerEpsilon": [],
-                "relaxPerNlIter": [],
-                "timeEpsilonLoop": [],
-                "mmasub": {"moveAsymp": -1, "moveLim": -1, "mmasubMat": -1, "all": -1},
-                "subsolvIP": {"lin": -1, "relax": -1},
-            },
+            "gcmma": True,
         }
 
         # create the attributes
         for (prop, default) in param_defaults.items():
             setattr(self, prop, parameters.get(prop, default))
         self.local_n = len(self.xmin)
+        if self.m >= self.local_n:
+            raise RuntimeError(
+                "This MMA implementation only handles a number of constraints smaller than the number of design variables"
+            )
         self.xmin = np.array(self.xmin)
         self.xmax = np.array(self.xmax)
         self.comm = MPI.COMM_WORLD
+
+        # TODO if there are two variables per cell, the volume will be twice as big...
+        # So far, this is not allowed by the element check in MMASolver
+        local_volume = np.sum(self.Mdiag)
+        self.volume = self.comm.allreduce(local_volume, op=MPI.SUM)
+        print(f"Volume for MMA is: {self.volume}")
 
         # clasical configuration when parameters are unspecified
         if len(self.a) == 0:
@@ -128,75 +130,29 @@ class MMAClient(object):
 
     def residualKKTPrimal(
         self,
-        m,
-        n,
         x,
         y,
         z,
         lam,
-        xsi,
-        eta,
-        mu,
-        zet,
-        s,
-        xmin,
-        xmax,
         df0dx,
         fval,
         dfdx,
-        a0,
-        a,
-        c,
-        d,
     ):
-        """
-        The left hand sides of the KKT conditions for the following
-        nonlinear programming problem are calculated.
+        residual_gradients = (df0dx + np.dot(np.transpose(dfdx), lam)) / self.Mdiag
+        mu_min = np.where(residual_gradients > 0.0, residual_gradients, 0.0)
+        mu_min *= (self.xmin - x) * np.sqrt(self.Mdiag)
+        mu_max = np.where(residual_gradients < 0.0, -residual_gradients, 0.0)
+        mu_max *= (self.xmax - x) * np.sqrt(self.Mdiag)
+        norm2_grad = mu_min ** 2 + mu_max ** 2
+        local_norm2 = np.sum(norm2_grad)
+        norm2 = self.comm.allreduce(local_norm2, op=MPI.SUM)
 
-        Minimize    f_0(x) + a_0*z + sum( c_i*y_i + 0.5*d_i*(y_i)^2 )
-        subject to  f_i(x) - a_i*z - y_i <= 0,  i = 1,...,m
-                    xmax_j <= x_j <= xmin_j,    j = 1,...,n
-                    z >= 0,   y_i >= 0,         i = 1,...,m
-        INPUT:
-        m    : The number of general constraints.
-        n    : The number of variables x_j.
-        x    : List of current values of the n variables x_j.
-        y    : List of current values of the m variables y_i.
-        z    : List of current value of the single variable z.
-        lam  : List of Lagrange multipliers for the m general constraints.
-        xsi  : List of Lagrange multipliers for the n constraints xmin_j-x_j<=0
-        eta  : List of Lagrange multipliers for the n constraints x_j-xmax_j<=0
-        mu   : List of Lagrange multipliers for the m constraints -y_i<=0
-        zet  : List of Lagrange multiplier for the single constraint -z<=0
-        s    : List of Slack variables for the m general constraints.
-        xmin : List of Lower bounds for the variables x_j.
-        xmax : List of Upper bounds for the variables x_j.
-        df0dx: List of of the derivatives of the objective function f_0
-                with respect to the variables x_j, calculated at x.
-        fval : List of the values of the constraint functions f_i,
-                calculated at x.
-        dfdx : (m x n)-List with the derivatives of the constraint functions
-                f_i with respect to the variables x_j, calculated at x.
-        dfdx(i,j) : List of the derivative of f_i with respect to x_j.
-        a0   : Constant a_0 in the term a_0*z.
-        a    : List of the constants a_i in the terms a_i*z.
-        c    : List of the constants c_i in the terms c_i*y_i.
-        d    : List of the constants d_i in the terms 0.5*d_i*(y_i)^2.
-
-        OUTPUT:
-        residual = (list) residual vector for the KKT conditions.
-        """
-        residual = []
-        residual.extend(df0dx + np.dot(np.transpose(dfdx), lam) - xsi + eta)  # rex
-        residual.extend(c + d * y - mu - lam)  # rey
-        residual.append(self.a0 - zet - np.dot(a, lam))  # rez
-        residual.extend(fval - self.a * z - y + s)  # relam
-        residual.extend(xsi * (x - self.xmin))  # rexsi
-        residual.extend(eta * (self.xmax - x))  # reeta
-        residual.extend(mu * y)  # remu
-        residual.append(zet * z)  # rezet
-        residual.extend(lam * s)  # res
-        return np.array(residual)
+        residual_constraints = fval - self.a * z - y
+        residual_constraints = np.where(
+            residual_constraints < 0.0, lam * residual_constraints, residual_constraints
+        )
+        kkt_norm = np.sqrt(np.sum(residual_constraints ** 2) + norm2)
+        return kkt_norm
 
     def resKKT(
         self,
@@ -209,20 +165,21 @@ class MMAClient(object):
         P,
         Q,
         b,
-        x,
-        y,
-        z,
-        lam,
-        xsi,
-        eta,
-        mu,
-        zet,
-        s,
+        design_state,
         epsi,
     ):
+        x = design_state.x
+        y = design_state.y
+        z = design_state.z
+        lam = design_state.lam
+        xsi = design_state.xsi
+        eta = design_state.eta
+        mu = design_state.mu
+        s = design_state.s
+        zet = design_state.zet
+        z = design_state.z
+
         Mdiag = self.Mdiag
-        if self._timing:
-            t0 = time.time()
         ux1 = upp - x
         xl1 = x - low
         ux2 = ux1 * ux1
@@ -231,7 +188,7 @@ class MMAClient(object):
         xlinv1 = 1.0 / xl1
         plam = p0 + np.dot(P.T, lam)
         qlam = q0 + np.dot(Q.T, lam)
-        local_gvec = P.dot(uxinv1) + Q.dot(xlinv1)
+        local_gvec = (P * self.Mdiag).dot(uxinv1) + (Q * self.Mdiag).dot(xlinv1)
         gvec = self.comm.allreduce(local_gvec, op=MPI.SUM)
         dpsidx = ne.evaluate("plam / ux2 - qlam / xl2")
 
@@ -246,9 +203,7 @@ class MMAClient(object):
             return residuMax
 
         # rex
-        local_residu_x = ne.evaluate(
-            "(dpsidx - Mdiag*xsi + Mdiag*eta)"
-        )  # TODO weight the xsi and eta with the mass matrix
+        local_residu_x = ne.evaluate("(dpsidx * Mdiag - Mdiag*xsi + Mdiag*eta)")
         residu_x_norm = global_res_norm_square(
             ne.evaluate("local_residu_x / sqrt(Mdiag)")
         )  # This components is in the dual space, the norm has
@@ -264,7 +219,7 @@ class MMAClient(object):
         residu_z_norm = residu_z ** 2
         residu_z_max = np.abs(residu_z)
         # relam
-        residu_lam = gvec - self.a * z - y + s - b
+        residu_lam = gvec - self.a * z - y + s + b
         residu_lam_norm = np.sum(residu_lam ** 2)
         residu_lam_max = np.linalg.norm(residu_lam, np.inf)
         # rexsi
@@ -280,9 +235,9 @@ class MMAClient(object):
         residu_mu_norm = np.sum(residu_mu ** 2)
         residu_mu_max = np.linalg.norm(residu_mu, np.inf)
         # rezet
-        residu_zeta = zet * z - epsi
-        residu_zeta_norm = residu_zeta ** 2
-        residu_zeta_max = np.abs(residu_zeta)
+        residu_zet = zet * z - epsi
+        residu_zet_norm = residu_zet ** 2
+        residu_zet_max = np.abs(residu_zet)
         # res
         residu_s = lam * s - epsi
         residu_s_norm = np.sum(residu_s ** 2)
@@ -297,7 +252,7 @@ class MMAClient(object):
             + residu_mu_norm
             + residu_s_norm
             + residu_z_norm
-            + residu_zeta_norm
+            + residu_zet_norm
         )
         residu_max = np.max(
             (
@@ -309,21 +264,25 @@ class MMAClient(object):
                 residu_mu_max,
                 residu_s_max,
                 residu_z_max,
-                residu_zeta_max,
+                residu_zet_max,
             )
         )
 
-        if self._timing:
-            self._elapsedTime["resKKT"] = time.time() - t0
-
         return residu_norm, residu_max
 
-    def preCompute(
-        self, alfa, beta, low, upp, p0, q0, P, Q, b, x, y, z, lam, xsi, eta, mu, s, epsi
-    ):
+    def preCompute(self, alfa, beta, low, upp, p0, q0, P, Q, b, design_state, epsi):
+        x = design_state.x
+        y = design_state.y
+        z = design_state.z
+        lam = design_state.lam
+        xsi = design_state.xsi
+        eta = design_state.eta
+        mu = design_state.mu
+        s = design_state.s
+        zet = design_state.zet
+        z = design_state.z
+
         # delx,dely,delz,dellam,diagx,diagy,diagxinv,diaglamyi,GG):
-        if self._timing:
-            t0 = time.time()
         invxalpha = ne.evaluate("1 / (x - alfa)")
         invxbeta = ne.evaluate("1 / (beta - x)")
         ux1 = upp - x
@@ -338,29 +297,26 @@ class MMAClient(object):
         xlinv2 = 1.0 / xl2
         plam = p0 + lam.dot(P)
         qlam = q0 + lam.dot(Q)
-        local_gvec = P.dot(uxinv1) + Q.dot(xlinv1)
+        local_gvec = (P * self.Mdiag).dot(uxinv1) + (Q * self.Mdiag).dot(xlinv1)
         gvec = self.comm.allreduce(local_gvec, op=MPI.SUM)
-        GG = ne.evaluate("uxinv2 * P - xlinv2 * Q")
-        dpsidx = ne.evaluate("plam * uxinv2 - qlam * xlinv2")
         Mdiag = self.Mdiag
+        GG = ne.evaluate("uxinv2 * P * Mdiag - xlinv2 * Q * Mdiag")
+        dpsidx = ne.evaluate("plam * uxinv2 - qlam * xlinv2")
         delx = ne.evaluate(
-            "dpsidx - Mdiag * epsi * invxalpha + Mdiag * epsi * invxbeta"
-        )  # TODO mass matrix for xsi and eta
-        diagx = ne.evaluate("plam / ux3 + qlam / xl3")
+            "dpsidx * Mdiag - Mdiag * epsi * invxalpha + Mdiag * epsi * invxbeta"
+        )
         diagx = ne.evaluate(
-            "2 * diagx + Mdiag * xsi * invxalpha + Mdiag * eta * invxbeta"
-        )  # TODO mass matrix for xsi and eta
+            "2 * (plam / ux3 + qlam / xl3) * Mdiag + Mdiag * xsi * invxalpha + Mdiag * eta * invxbeta"
+        )
         diagxinv = 1.0 / diagx
 
         dely = self.c + self.d * y - lam - epsi / y
         delz = self.a0 - np.dot(self.a, lam) - epsi / z
-        dellam = gvec - self.a * z - y - b + epsi / lam
+        dellam = gvec - self.a * z - y + b + epsi / lam
         diagy = self.d + mu / y
         diagyinv = 1.0 / diagy
         diaglam = s / lam
         diaglamyi = diaglam + diagyinv
-        if self._timing:
-            self._elapsedTime["preCompute"] = time.time() - t0
 
         return delx, dely, delz, dellam, diagx, diagy, diagxinv, diaglamyi, GG
 
@@ -369,8 +325,6 @@ class MMAClient(object):
         JAC = [Alam     a
                 a'    -zet/z ]
         """
-        if self._timing:
-            t0 = time.time()
         local_Alam = np.dot(diagxinvGG, GG.T)
         Alam = self.comm.allreduce(local_Alam, op=MPI.SUM)
         mm = range(0, self.m)
@@ -380,34 +334,20 @@ class MMAClient(object):
         jac[self.m, 0 : self.m] = self.a
         jac[self.m, self.m] = -zet / z
         jac[0 : self.m, self.m] = self.a
-        if self._timing:
-            self._elapsedTime["JacDual"] = time.time() - t0
 
         return jac
 
     def RHSdual(self, dellam, delx, dely, delz, diagxinvGG, diagy, GG):
-        if self._timing:
-            t0 = time.time()
         rhs = np.empty(shape=(self.m + 1,), dtype=float)
         local_diagxinvGG_delx = diagxinvGG.dot(delx)
         diagxinvGG_delx = self.comm.allreduce(local_diagxinvGG_delx, op=MPI.SUM)
         rhs[0 : self.m] = dellam + dely / diagy - diagxinvGG_delx
         rhs[self.m] = delz
-        if self._timing:
-            self._elapsedTime["RHSdual"] = time.time() - t0
         return rhs
 
     def getNewPoint(
         self,
-        xold,
-        yold,
-        zold,
-        lamold,
-        xsiold,
-        etaold,
-        muold,
-        zetold,
-        sold,
+        design_state_old,
         dx,
         dy,
         dz,
@@ -419,8 +359,17 @@ class MMAClient(object):
         ds,
         step,
     ):
-        if self._timing:
-            t0 = time.time()
+        xold = design_state_old.x
+        yold = design_state_old.y
+        zold = design_state_old.z
+        lamold = design_state_old.lam
+        xsiold = design_state_old.xsi
+        etaold = design_state_old.eta
+        muold = design_state_old.mu
+        sold = design_state_old.s
+        zetold = design_state_old.zet
+        zold = design_state_old.z
+
         x = xold + step * dx
         y = yold + step * dy
         z = zold + step * dz
@@ -430,10 +379,12 @@ class MMAClient(object):
         mu = muold + step * dmu
         zet = zetold + step * dzet
         s = sold + step * ds
-        if self._timing:
-            self._elapsedTime["JacDual"] = time.time() - t0
 
-        return x, y, z, lam, xsi, eta, mu, zet, s
+        design_state = DesignState(
+            x=x, y=y, z=z, lam=lam, xsi=xsi, eta=eta, mu=mu, zet=zet, s=s
+        )
+
+        return design_state
 
     def subsolvIP(self, alfa, beta, low, upp, p0, q0, P, Q, b):
         """
@@ -463,16 +414,14 @@ class MMAClient(object):
         s = np.ones([self.m])
         epsiIt = 1
 
+        design_state = DesignState(
+            x=x, y=y, z=z, lam=lam, xsi=xsi, eta=eta, mu=mu, zet=zet, s=s
+        )
+
         if self.IP > 0:
             print(str("*" * 80))
-        if self._timing:
-            self._elapsedTime["nlIterPerEpsilon"] = []
-            self._elapsedTime["relaxPerNlIter"] = []
-            self._elapsedTime["timeEpsilonLoop"] = []
 
         while epsi > self.epsimin:  # Loop over epsilon
-            if self._timing:
-                t0Eps = time.time()
             self.iPrint(["Interior Point it.", "epsilon"], [epsiIt, epsi], 0)
 
             # compute residual
@@ -486,22 +435,14 @@ class MMAClient(object):
                 P,
                 Q,
                 b,
-                x,
-                y,
-                z,
-                lam,
-                xsi,
-                eta,
-                mu,
-                zet,
-                s,
+                design_state,
                 epsi,
             )
 
             # Solve the NL KKT problem for a given epsilon
             it_NL = 1
             relaxloopEpsi = []
-            while residuNorm > 0.8 * epsi and it_NL < 200:
+            while residuNorm > 0.9 * epsi and it_NL < 200:
                 self.iPrint(
                     ["NL it.", "Norm(res)", "Max(|res|)"],
                     [it_NL, residuNorm, residuMax],
@@ -529,35 +470,19 @@ class MMAClient(object):
                     P,
                     Q,
                     b,
-                    x,
-                    y,
-                    z,
-                    lam,
-                    xsi,
-                    eta,
-                    mu,
-                    s,
+                    design_state,
                     epsi,
                 )
 
                 # assemble and solve the system: dlam or dx
-                if self.m < self.local_n:
-                    diagxinvGG = diagxinv * GG
-                    AA = self.JacDual(diagxinvGG, diaglamyi, GG, z, zet)
-                    bb = self.RHSdual(dellam, delx, dely, delz, diagxinvGG, diagy, GG)
-                    if self._timing:
-                        t0Solve = time.time()
-                    solut = np.linalg.solve(AA, bb)
-                    if self._timing:
-                        self._elapsedTime["subsolvIP"]["lin"] = time.time() - t0Solve
-                    dlam = solut[0 : self.m]
-                    dz = solut[self.m]
-                    # dx2 = - delx*diagxinv - np.transpose(GG).dot(dlam)/diagx
-                    dx = -delx * diagxinv - np.dot((diagxinv * GG).T, dlam)
-                else:
-                    raise RuntimeError(
-                        "This MMA implementation only handles a number of constraints smaller than the number of design variables"
-                    )
+                diagxinvGG = diagxinv * GG
+                AA = self.JacDual(diagxinvGG, diaglamyi, GG, z, zet)
+                bb = self.RHSdual(dellam, delx, dely, delz, diagxinvGG, diagy, GG)
+                solut = np.linalg.solve(AA, bb)
+
+                dlam = solut[0 : self.m]
+                dz = solut[self.m]
+                dx = -delx * diagxinv - np.dot((diagxinv * GG).T, dlam)
                 dy = -dely / diagy + dlam / diagy
                 dxsi = ne.evaluate(
                     "-xsi +  epsi / (x - alfa) - (xsi * dx) / (x - alfa)"
@@ -570,22 +495,12 @@ class MMAClient(object):
                 ds = -s + epsi / lam - (s * dlam) / lam
 
                 # store variables
-                xold = np.copy(x)
-                yold = np.copy(y)
-                zold = np.copy(z)
-                lamold = np.copy(lam)
-                xsiold = np.copy(xsi)
-                etaold = np.copy(eta)
-                muold = np.copy(mu)
-                zetold = np.copy(zet)
-                sold = np.copy(s)
+                design_state_old = copy.copy(design_state)
 
                 # relaxation of the newton step for staying in feasible region
                 len_xx = self.local_n * 2 + self.m * 4 + 2
                 xx = np.zeros(len_xx)
-                np.concatenate(
-                    (y, [z], lam, xsi, eta, mu, [zet], s), out=xx
-                )  # TODO probably it is not necessary to concatenate if you calculate the step separately
+                np.concatenate((y, [z], lam, xsi, eta, mu, [zet], s), out=xx)
                 dxx = np.zeros(len_xx)
                 np.concatenate((dy, [dz], dlam, dxsi, deta, dmu, [dzet], ds), out=dxx)
 
@@ -606,24 +521,14 @@ class MMAClient(object):
                 resinewNorm = 2 * residuNorm
                 resinewMax = 1e10
                 while resinewNorm > residuNorm and itto < 200:
-                    if self._timing:
-                        t0_relax = time.time()
                     self.iPrint(
                         ["relax. it.", "Norm(res)", "step"],
                         [itto, resinewNorm, steg],
                         2,
                     )
                     # compute new point
-                    x, y, z, lam, xsi, eta, mu, zet, s = self.getNewPoint(
-                        xold,
-                        yold,
-                        zold,
-                        lamold,
-                        xsiold,
-                        etaold,
-                        muold,
-                        zetold,
-                        sold,
+                    design_state = self.getNewPoint(
+                        design_state_old,
                         dx,
                         dy,
                         dz,
@@ -635,6 +540,16 @@ class MMAClient(object):
                         ds,
                         steg,
                     )
+                    x = design_state.x
+                    y = design_state.y
+                    z = design_state.z
+                    lam = design_state.lam
+                    xsi = design_state.xsi
+                    eta = design_state.eta
+                    mu = design_state.mu
+                    s = design_state.s
+                    zet = design_state.zet
+                    z = design_state.z
 
                     # compute the residual
                     resinewNorm, resinewMax = self.resKKT(
@@ -647,26 +562,17 @@ class MMAClient(object):
                         P,
                         Q,
                         b,
-                        x,
-                        y,
-                        z,
-                        lam,
-                        xsi,
-                        eta,
-                        mu,
-                        zet,
-                        s,
+                        design_state,
                         epsi,
                     )
 
                     # update step
                     steg /= 2.0
                     itto += 1
-                    if self._timing:
-                        self._elapsedTime["subsolvIP"]["relax"] = time.time() - t0_relax
 
-                if self._timing:
-                    relaxloopEpsi.append(itto)
+                    if itto > 198:
+                        warning(f"Line search iteration limit {itto} reached")
+
                 self.iPrint(
                     ["relax. it.", "Norm(res)", "step"], [itto, resinewNorm, steg], 2
                 )
@@ -675,27 +581,21 @@ class MMAClient(object):
                 residuMax = resinewMax
                 steg *= 2.0
                 it_NL += 1
-            if self._timing:
-                self._elapsedTime["timeEpsilonLoop"].append(time.time() - t0Eps)
-                self._elapsedTime["nlIterPerEpsilon"].append(it_NL - 1)
-                self._elapsedTime["relaxPerNlIter"].append([relaxloopEpsi])
 
             if it_NL > 198:
-                self.iPrint(["it limit", "with epsilon"], [it_NL, epsi], 0)
+                warning(f"Iteration limit of the Newton solver ({it_NL}) reached")
             epsi *= 0.1
             epsiIt += 1
 
         if self.IP > 0:
             print(str("*" * 80))
 
-        return x, y, z, lam, xsi, eta, mu, zet, s
+        return x, y, z, lam
 
     def moveAsymp(self, xval, xold1, xold2, low, upp, iter):
         """
         Calculation of the asymptotes low and upp
         """
-        if self._timing:
-            t0 = time.time()
         if iter <= 2:
             low = xval - self.asyinit * (self.xmax - self.xmin)
             upp = xval + self.asyinit * (self.xmax - self.xmin)
@@ -710,8 +610,6 @@ class MMAClient(object):
             low = np.minimum(low, xval - 0.01 * (self.xmax - self.xmin))
             upp = np.minimum(upp, xval + 10 * (self.xmax - self.xmin))
             upp = np.maximum(upp, xval + 0.01 * (self.xmax - self.xmin))
-        if self._timing:
-            self._elapsedTime["mmasub"]["moveAsymp"] = time.time() - t0
 
         return low, upp
 
@@ -719,8 +617,6 @@ class MMAClient(object):
         """
         Calculation of the move limits: alfa and beta
         """
-        if self._timing:
-            t0 = time.time()
         aa = np.maximum(
             low + self.albefa * (xval - low), xval - self.move * (self.xmax - self.xmin)
         )
@@ -729,63 +625,124 @@ class MMAClient(object):
             upp - self.albefa * (upp - xval), xval + self.move * (self.xmax - self.xmin)
         )
         beta = np.minimum(aa, self.xmax)
-        if self._timing:
-            self._elapsedTime["mmasub"]["moveLim"] = time.time() - t0
 
         return alfa, beta, factor
 
-    def mmasubMat(self, xval, low, upp, df0dx, fval, dfdx):
+    def mmasubMat(self, xval, low, upp, f0val, df0dx, fval, dfdx, rho0, rhoi):
         """
         Calculations of p0, q0, P, Q and b.
         """
-        if self._timing:
-            t0 = time.time()
 
         xmami = self.xmax - self.xmin
-        xmamieps = np.array([0.00001 * self.local_n])
-        xmami = np.maximum(xmami, xmamieps)
         xmamiinv = 1.0 / xmami
         ux1 = upp - xval
         ux2 = ux1 * ux1
         xl1 = xval - low
         xl2 = xl1 * xl1
-        p0 = np.maximum(df0dx, 0)
-        q0 = np.maximum(-df0dx, 0)
-        pq0 = 0.001 * (p0 + q0) + self.raa0 * xmamiinv * self.Mdiag
+        p0 = np.maximum(df0dx, 0.0)
+        q0 = np.maximum(-df0dx, 0.0)
+        pq0 = 0.001 * (p0 + q0) + rho0 * xmamiinv
         p0 = p0 + pq0
         q0 = q0 + pq0
         p0 = p0 * ux2
         q0 = q0 * xl2
 
-        P = np.maximum(dfdx, 0)
-        Q = np.maximum(-dfdx, 0)
-        PQ = (
-            0.001 * (P + Q)
-            + self.Mdiag * self.raa0 * np.ones([self.m, 1]) * xmamiinv[np.newaxis, :]
-        )
+        P = np.maximum(dfdx, 0.0)
+        Q = np.maximum(-dfdx, 0.0)
+        PQ = 0.001 * (P + Q) + rhoi[:, np.newaxis] * xmamiinv[np.newaxis, :]
         P = ne.evaluate("ux2 * (P + PQ)")
         Q = ne.evaluate("xl2 * (Q + PQ)")
         ux1inv = ne.evaluate("1.0 / ux1")
         xl1inv = ne.evaluate("1.0 / xl1")
-        local_b = np.dot(P, ux1inv) + np.dot(Q, xl1inv)
-        b = self.comm.allreduce(local_b, op=MPI.SUM) - fval.T
 
-        if self._timing:
-            self._elapsedTime["mmasub"]["mmasubMat"] = time.time() - t0
+        local_b0 = np.dot(p0 * self.Mdiag, ux1inv) + np.dot(q0 * self.Mdiag, xl1inv)
+        b0 = -self.comm.allreduce(local_b0, op=MPI.SUM) + f0val
 
-        return p0, q0, P, Q, b
+        local_b = np.dot(P * self.Mdiag, ux1inv) + np.dot(Q * self.Mdiag, xl1inv)
+        b = -self.comm.allreduce(local_b, op=MPI.SUM) + fval.T
 
-    def mmasub(
-        self, xval, xold1, xold2, low, upp, f0val, fval, df0dx, dfdx, iter, factor
+        return p0, q0, P, Q, b0, b
+
+    def calculate_initial_rho(self, dfdx, xmax, xmin):
+        local_rho = np.dot(np.abs(dfdx), xmax - xmin)
+        rho = 0.1 / self.volume * self.comm.allreduce(local_rho, op=MPI.SUM)
+        if self.gcmma == False:
+            if isinstance(rho, np.ndarray):
+                rho.fill(1e-5)
+            else:
+                rho = 1e-5
+        return rho
+
+    def calculate_rho(self, rho, new_fval, fapp, x_inner, x_outer, low, upp):
+        denom = np.dot(
+            self.Mdiag,
+            (
+                (upp - low)
+                * (x_inner - x_outer) ** 2
+                / ((upp - x_inner) * (x_inner - low) * (self.xmax - self.xmin))
+            ),
+        )
+        denom = self.comm.allreduce(denom, op=MPI.SUM)
+        delta = (new_fval - fapp) / denom
+
+        if not isinstance(fapp, np.ndarray):
+            delta = np.array([delta])
+            rho
+
+        return np.where(
+            delta > 0,
+            np.minimum(1.1 * (rho + delta), 10.0 * rho),
+            rho,
+        )
+
+    def convex_approximation(self, x_inner, p, q, b, low, upp):
+        if len(p.shape) > 1:
+            local_fapp = np.sum(
+                self.Mdiag * p / (upp - x_inner) + self.Mdiag * q / (x_inner - low), 1
+            )
+        else:
+            local_fapp = np.sum(
+                self.Mdiag * p / (upp - x_inner) + self.Mdiag * q / (x_inner - low)
+            )
+        fapp = self.comm.allreduce(local_fapp, op=MPI.SUM) + b
+        return fapp
+
+    def condition_check(self, fapp, new_fval):
+
+        if isinstance(fapp, np.ndarray):
+            assert fapp.size == new_fval.size
+        else:
+            fapp = np.array([fapp])
+            new_fval = np.array([new_fval])
+
+        tolerance = 1e-8
+
+        condition = False
+        for fapp_i, new_fval_i in zip(fapp, new_fval):
+            print(f"condition: fapp {fapp_i}, new_fval {new_fval_i}")
+            if fapp_i + tolerance >= new_fval_i:
+                condition = True
+            else:
+                return False
+
+        return condition
+
+    def mma(
+        self,
+        xval,
+        xold1,
+        xold2,
+        low,
+        upp,
+        f0val,
+        fval,
+        df0dx,
+        dfdx,
+        iter,
+        factor=[],
+        eval_f=None,
+        eval_g=None,
     ):
-        """
-        Minimize    f_0(x) + a_0*z + sum( c_i*y_i + 0.5*d_i*(y_i)^2 )
-        subject to  f_i(x) - a_i*z - y_i <= 0,  i = 1,...,m
-                    xmin_j <= x_j <= self.xmax_j, j = 1,...,n
-                    z >= 0,   y_i >= 0, i = 1,...,m
-        """
-        if self._timing:
-            t0 = time.time()
 
         # Calculation of the asymptotes low and upp
         low, upp = self.moveAsymp(xval, xold1, xold2, low, upp, iter)
@@ -793,31 +750,53 @@ class MMAClient(object):
         # Calculation of the bounds alfa and beta
         alfa, beta, factor = self.moveLim(iter, xval, xold1, xold2, low, upp, factor)
 
-        # Calculations of p0, q0, P, Q and b
-        p0, q0, P, Q, b = self.mmasubMat(xval, low, upp, df0dx, fval, dfdx)
+        rho0 = self.calculate_initial_rho(df0dx, self.xmax, self.xmin)
+        rhoi = self.calculate_initial_rho(dfdx, self.xmax, self.xmin)
 
-        if self._timing:
-            self._elapsedTime["mmasub"]["all"] = time.time() - t0
+        inner_it_max = 100
+        inner_it = 0
+        # Apply Riesz map to the gradients
+        df0dx /= self.Mdiag
+        dfdx /= self.Mdiag
+        while inner_it < inner_it_max:
+            # generate subproblem
+            p0, q0, P, Q, b0, b = self.mmasubMat(
+                xval, low, upp, f0val, df0dx, fval, dfdx, rho0, rhoi
+            )
+            print(f"rho0: {rho0}, rhoi: {rhoi}")
 
-        return low, upp, alfa, beta, p0, q0, P, Q, b, factor
+            # solve the subproblem
+            x_inner, y, z, lam = self.subsolvIP(alfa, beta, low, upp, p0, q0, P, Q, b)
 
-    def mma(
-        self, xval, xold1, xold2, low, upp, f0val, fval, df0dx, dfdx, iter, factor=[]
-    ):
-        if self._timing:
-            t0 = time.time()
+            new_f0val = eval_f(x_inner)
+            new_fval = eval_g(x_inner).flatten()
 
-        # generate subproblem
-        low, upp, alfa, beta, p0, q0, P, Q, b, factor = self.mmasub(
-            xval, xold1, xold2, low, upp, f0val, fval, df0dx, dfdx, iter, factor
+            f0app = self.convex_approximation(x_inner, p0, q0, b0, low, upp)
+            fapp = self.convex_approximation(x_inner, P, Q, b, low, upp)
+
+            assert fapp.size == new_fval.size
+            if self.gcmma == False or (
+                self.condition_check(f0app, new_f0val)
+                and self.condition_check(fapp, new_fval)
+            ):
+                break
+            else:
+                rho0 = self.calculate_rho(
+                    rho0, new_f0val, f0app, x_inner, xval, low, upp
+                )
+                rhoi = self.calculate_rho(rhoi, new_fval, fapp, x_inner, xval, low, upp)
+                print(f"Recalculating rho")
+
+            inner_it += 1
+
+        return (
+            x_inner,
+            y,
+            z,
+            lam,
+            low,
+            upp,
+            factor,
+            new_f0val,
+            new_fval,
         )
-
-        # solve the subproblem
-        x, y, z, lam, xsi, eta, mu, zet, s = self.subsolvIP(
-            alfa, beta, low, upp, p0, q0, P, Q, b
-        )
-
-        if self._timing:
-            self._elapsedTime["mma"] = time.time() - t0
-
-        return x, y, z, lam, xsi, eta, mu, zet, s, low, upp, factor
