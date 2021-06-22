@@ -1,14 +1,13 @@
 import numpy as np
 import copy
 import numexpr as ne
-from scipy.sparse import spdiags
-import time
 from firedrake.petsc import PETSc
 from mpi4py import MPI
 from firedrake import COMM_WORLD, warning
 
 
-print = lambda x: PETSc.Sys.Print(x, comm=COMM_WORLD)
+def print(x):
+    return PETSc.Sys.Print(x, comm=COMM_WORLD)
 
 
 class DesignState(object):
