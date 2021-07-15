@@ -23,7 +23,8 @@ except ImportError:
 import numpy
 
 
-print = lambda x: PETSc.Sys.Print(x, comm=COMM_WORLD)
+def print(x):
+    return PETSc.Sys.Print(x, comm=COMM_WORLD)
 
 
 class MMASolver(OptimizationSolver):
@@ -50,13 +51,13 @@ class MMASolver(OptimizationSolver):
                 or sub_elem[1].degree() != 0
             ):
                 raise RuntimeError(
-                    "Only zero degree Discontinuous Galerkin function space for extruded elements is supported"
+                    "Only zero degree Discontinuous Galerkin function space for extruded\
+                     elements is supported"
                 )
-        else:
-            if control_elem.family() not in supported_fe or control_elem.degree() != 0:
-                raise RuntimeError(
-                    "Only zero degree Discontinuous Galerkin function space is supported"
-                )
+        elif control_elem.family() not in supported_fe or control_elem.degree() != 0:
+            raise RuntimeError(
+                "Only zero degree Discontinuous Galerkin function space is supported"
+            )
 
         if parameters.get("norm") == "L2":
             self.Mdiag = assemble(
@@ -80,8 +81,6 @@ class MMASolver(OptimizationSolver):
         param_defaults = {
             "m": 1,
             "n": 1,
-            "xmax": False,
-            "xmin": False,
             "Mdiag": False,
             "tol": 1e-8,
             "accepted_tol": 1e-4,
@@ -145,9 +144,7 @@ class MMASolver(OptimizationSolver):
 
                 if isinstance(control.control, Function):
                     n_local_control = control.control.dat.data_ro.size
-                elif isinstance(control.control, Constant) or isinstance(
-                    control.control, AdjFloat
-                ):
+                elif isinstance(control.control, (Constant, AdjFloat)):
                     n_local_control = 1
                 else:
                     raise TypeError(
@@ -200,38 +197,41 @@ class MMASolver(OptimizationSolver):
 
             # The constraint Jacobian
             def jac_g(x, flag, user_data=None):
-                if flag:
-                    rows = numpy.array([], dtype=int)
-                    cols = numpy.array([], dtype=int)
-                    return (rows, cols)
-                else:
+                if not flag:
                     return empty
+
+                rows = numpy.array([], dtype=int)
+                cols = numpy.array([], dtype=int)
+                return (rows, cols)
 
             return (nconstraints, fun_g, jac_g)
         else:
             # The length of the constraint vector
             nconstraints = constraint._get_constraint_dim()
             # The constraint function
+
             def fun_g(x, user_data=None):
-                out = numpy.array(constraint.function(x), dtype=float)
-                return out
+                return numpy.array(constraint.function(x), dtype=float)
 
             # The constraint Jacobian:
             # flag = True  means 'tell me the sparsity pattern';
             # flag = False means 'give me the damn Jacobian'.
+
             def jac_g(x, user_data=None):
-                out = constraint.jacobian(x)
-                return out
+                return constraint.jacobian(x)
 
             return (nconstraints, fun_g, jac_g)
 
-    def solve(self):
+    def solve(self, xold1_func=None, xold2_func=None, low_func=None, 
+              upp_func=None, loop=1):
 
         change = 1.0
-        loop = 1
+        assert ((xold1_func is None and xold2_func is None and
+                low_func is None and upp_func is None) or
+                (xold1_func and xold2_func and low_func and upp_func))
+
         parameters = self.parameters
         tol = parameters["tol"]
-        accepted_tol = parameters["accepted_tol"]
         # Initial estimation
         control_function = self.rf.controls[0].control
         if parameters["restart_file"]:
@@ -250,12 +250,26 @@ class MMASolver(OptimizationSolver):
 
         # Create an optimizer client
         clientOpt = MMAClient(parameters)
-        #'asyinit':0.2,'asyincr':0.8,'asydecr':0.3
+        # 'asyinit':0.2,'asyincr':0.8,'asydecr':0.3
 
         xold1 = np.copy(a_np)
         xold2 = np.copy(a_np)
         low = np.array([])
         upp = np.array([])
+        if not xold1_func:
+            xold1_func = Function(control_function.function_space())
+            xold2_func = Function(control_function.function_space())
+            low_func = Function(control_function.function_space())
+            upp_func = Function(control_function.function_space())
+        else:
+            def func_to_vec(func):
+                with func.dat.vec_ro as func_vec:
+                    vec = func_vec.array
+                return vec
+            xold1 = func_to_vec(xold1_func)
+            xold2 = func_to_vec(xold2_func)
+            low = func_to_vec(low_func)
+            upp = func_to_vec(upp_func)
 
         change_arr = []
 
@@ -272,8 +286,7 @@ class MMASolver(OptimizationSolver):
         def eval_f(a_np):
             with a_function.dat.vec as a_vec:
                 a_vec.array_w = a_np
-            f0val = self.rf(a_function)
-            return f0val
+            return self.rf(a_function)
 
         def eval_g(a_np):
             with a_function.dat.vec as a_vec:
@@ -285,17 +298,20 @@ class MMASolver(OptimizationSolver):
         dg0dx = np.empty([m, n])
         df0dx = np.empty([n])
         comm = MPI.COMM_WORLD
-        rank = comm.Get_rank()
 
         f0val = eval_f(a_np)
         g0val = eval_g(a_np).flatten()
 
+        import firedrake as fd
+        residuals_func = fd.Function(a_function.function_space())
+        residuals_plot = fd.File(f"residuals_{loop}.pvd")
+
         while change > tol and loop <= itermax:
             t0 = time.time()
-            # Cost functions
 
             # Gradients
             df0dx_func = self.rf.derivative()
+
             jac = self.jac_g(a_function)
 
             # Copy into the numpy arrays
@@ -332,6 +348,8 @@ class MMASolver(OptimizationSolver):
                 df0dx,
                 g0val,
                 dg0dx,
+                residuals_func,
+                residuals_plot
             )
 
             local_change = np.abs(np.max(xmma - xold1))
@@ -361,15 +379,30 @@ class MMASolver(OptimizationSolver):
             #    break
             print(f"Time per iteration: {time.time() - t0}")
 
-        with a_function.dat.vec as a_vec:
-            a_vec.array_w = a_np
+        def copy_vec_into_funct(func, vec):
+            with func.dat.vec as a_vec:
+                a_vec.array_w = vec
+        
+        copy_vec_into_funct(a_function, a_np)
+        copy_vec_into_funct(xold1_func, xold1)
+        copy_vec_into_funct(xold2_func, xold2)
+        copy_vec_into_funct(low_func, low)
+        copy_vec_into_funct(upp_func, upp)
         # self.rf.set_local(new_params, a_np)
         PETSc.Sys.Print(
             "Optimization finished with change: {0:.5f} and iterations: {1}".format(
                 change, loop
             )
         )
-        return self.rf.controls.delist([a_function])
+        results = {
+            "control": self.rf.controls.delist([a_function]),
+            "xold1": xold1_func,
+            "xold2": xold2_func,
+            "low": low_func,
+            "upp": upp_func,
+            "loop": loop
+        }
+        return results
 
     def current_state(self):
         return (
