@@ -136,31 +136,16 @@ class MMAClient(object):
         df0dx,
         fval,
         dfdx,
-        residual_func,
-        residual_plot
     ):
-        
-        residual_gradients_df0dx = (df0dx) / self.Mdiag
-        print(f"df0dx contribution: {np.sum(residual_gradients_df0dx ** 2)}")
 
-        residual_gradients_dfdx = np.dot(np.transpose(dfdx), lam) / self.Mdiag
-        print(f"dfdx * lam contribution: {np.sum(residual_gradients_dfdx ** 2)}")
-        with residual_func.dat.vec as res_vec:
-            res_vec.array_w = residual_gradients_df0dx
-
-        residual_plot.write(residual_func)
-
-        residual_gradients = (df0dx + np.dot(np.transpose(dfdx), lam)) / self.Mdiag
+        residual_gradients = (df0dx + np.dot(np.transpose(dfdx), lam))
 
         mu_min = np.where(residual_gradients > 0.0, residual_gradients, 0.0)
         mu_min *= (self.xmin - x) * np.sqrt(self.Mdiag)
         mu_max = np.where(residual_gradients < 0.0, -residual_gradients, 0.0)
         mu_max *= (self.xmax - x) * np.sqrt(self.Mdiag)
         norm2_grad = mu_min ** 2 + mu_max ** 2
-        print(f"mu_min contribution: {np.sum(mu_min ** 2)}")
-        print(f"mu_max contribution: {np.sum(mu_max ** 2)}")
         local_norm2 = np.sum(norm2_grad)
-        print(f"local norm: {local_norm2}")
         norm2 = self.comm.allreduce(local_norm2, op=MPI.SUM)
 
         residual_constraints = fval - self.a * z - y

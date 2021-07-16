@@ -222,7 +222,7 @@ class MMASolver(OptimizationSolver):
 
             return (nconstraints, fun_g, jac_g)
 
-    def solve(self, xold1_func=None, xold2_func=None, low_func=None, 
+    def solve(self, xold1_func=None, xold2_func=None, low_func=None,
               upp_func=None, loop=1):
 
         change = 1.0
@@ -302,10 +302,6 @@ class MMASolver(OptimizationSolver):
         f0val = eval_f(a_np)
         g0val = eval_g(a_np).flatten()
 
-        import firedrake as fd
-        residuals_func = fd.Function(a_function.function_space())
-        residuals_plot = fd.File(f"residuals_{loop}.pvd")
-
         while change > tol and loop <= itermax:
             t0 = time.time()
 
@@ -348,8 +344,6 @@ class MMASolver(OptimizationSolver):
                 df0dx,
                 g0val,
                 dg0dx,
-                residuals_func,
-                residuals_plot
             )
 
             local_change = np.abs(np.max(xmma - xold1))
@@ -382,7 +376,7 @@ class MMASolver(OptimizationSolver):
         def copy_vec_into_funct(func, vec):
             with func.dat.vec as a_vec:
                 a_vec.array_w = vec
-        
+
         copy_vec_into_funct(a_function, a_np)
         copy_vec_into_funct(xold1_func, xold1)
         copy_vec_into_funct(xold2_func, xold2)
