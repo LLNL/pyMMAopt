@@ -250,7 +250,7 @@ class MMASolver(OptimizationSolver):
             low_func = Function(control_function.function_space())
             upp_func = Function(control_function.function_space())
 
-        if parameters["restart_file"]:
+        if parameters.get("restart_file", None):
             with HDF5File(parameters["restart_file"], "r") as checkpoint:
                 checkpoint.read(control_function, "/control")
                 checkpoint.read(xold1_func, "/xold1_func")

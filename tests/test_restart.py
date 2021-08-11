@@ -49,9 +49,9 @@ def test_save_with_signal():
     results = solver.solve()
     rho_sol = results["control"]
 
-    assert os.path.isfile("checkpoint.h5")
+    assert os.path.isfile("checkpoint_iter_10.h5")
 
-    parameters_mma["restart_file"] = "./checkpoint.h5"
+    parameters_mma["restart_file"] = "./checkpoint_iter_10.h5"
     parameters_mma["maximum_iterations"] = 0
     solver = MMASolver(problem, parameters=parameters_mma)
     results = solver.solve()
