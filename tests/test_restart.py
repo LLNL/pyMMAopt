@@ -18,6 +18,7 @@ def test_save_with_signal():
 
     def deriv_cb(j, dj, rho):
         iter = next(g_counter)
+        print(iter)
         if iter % 10 == 0 and iter > 0:
             os.kill(os.getpid(), signal.SIGUSR1)
 
@@ -45,13 +46,15 @@ def test_save_with_signal():
         "norm": "L2",
     }
     solver = MMASolver(problem, parameters=parameters_mma)
-    rho_sol = solver.solve()
+    results = solver.solve()
+    rho_sol = results["control"]
 
     assert os.path.isfile("checkpoint.h5")
 
     parameters_mma["restart_file"] = "./checkpoint.h5"
     parameters_mma["maximum_iterations"] = 0
     solver = MMASolver(problem, parameters=parameters_mma)
-    rho_restart = solver.solve()
+    results = solver.solve()
+    rho_restart = results["control"]
     assert errornorm(rho_sol, rho_restart) < 1e-2
 

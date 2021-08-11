@@ -27,6 +27,15 @@ def print(x):
     return PETSc.Sys.Print(x, comm=COMM_WORLD)
 
 
+def copy_vec_into_funct(func, vec):
+    with func.dat.vec as a_vec:
+        a_vec.array_w = vec
+
+
+def func_to_vec(func):
+    with func.dat.vec_ro as func_vec:
+        vec = func_vec.array
+    return vec
 class MMASolver(OptimizationSolver):
     def __init__(self, problem, parameters=None):
         OptimizationSolver.__init__(self, problem, parameters)
@@ -223,7 +232,7 @@ class MMASolver(OptimizationSolver):
             return (nconstraints, fun_g, jac_g)
 
     def solve(self, xold1_func=None, xold2_func=None, low_func=None,
-              upp_func=None, loop=1):
+              upp_func=None, loop=0):
 
         change = 1.0
         assert ((xold1_func is None and xold2_func is None and
@@ -234,11 +243,28 @@ class MMASolver(OptimizationSolver):
         tol = parameters["tol"]
         # Initial estimation
         control_function = self.rf.controls[0].control
+
+        if not xold1_func:
+            xold1_func = Function(control_function.function_space())
+            xold2_func = Function(control_function.function_space())
+            low_func = Function(control_function.function_space())
+            upp_func = Function(control_function.function_space())
+
         if parameters["restart_file"]:
             with HDF5File(parameters["restart_file"], "r") as checkpoint:
-                checkpoint.read(control_function, "/checkpoint")
+                checkpoint.read(control_function, "/control")
+                checkpoint.read(xold1_func, "/xold1_func")
+                checkpoint.read(xold2_func, "/xold2_func")
+                checkpoint.read(low_func, "/low_func")
+                checkpoint.read(upp_func, "/upp_func")
+
         with control_function.dat.vec_ro as control_vec:
             a_np = control_vec.array
+
+        xold1 = func_to_vec(xold1_func)
+        xold2 = func_to_vec(xold2_func)
+        low = func_to_vec(low_func)
+        upp = func_to_vec(upp_func)
 
         import numpy as np
 
@@ -252,34 +278,24 @@ class MMASolver(OptimizationSolver):
         clientOpt = MMAClient(parameters)
         # 'asyinit':0.2,'asyincr':0.8,'asydecr':0.3
 
-        xold1 = np.copy(a_np)
-        xold2 = np.copy(a_np)
-        low = np.array([])
-        upp = np.array([])
-        if not xold1_func:
-            xold1_func = Function(control_function.function_space())
-            xold2_func = Function(control_function.function_space())
-            low_func = Function(control_function.function_space())
-            upp_func = Function(control_function.function_space())
-        else:
-            def func_to_vec(func):
-                with func.dat.vec_ro as func_vec:
-                    vec = func_vec.array
-                return vec
-            xold1 = func_to_vec(xold1_func)
-            xold2 = func_to_vec(xold2_func)
-            low = func_to_vec(low_func)
-            upp = func_to_vec(upp_func)
-
         change_arr = []
 
         a_function = control_function.copy(deepcopy=True)
 
         def receive_signal(signum, stack):
+            copy_vec_into_funct(xold1_func, xold1)
+            copy_vec_into_funct(xold2_func, xold2)
+            copy_vec_into_funct(low_func, low)
+            copy_vec_into_funct(upp_func, upp)
+
             with HDF5File(
-                f"{parameters['output_dir']}/checkpoint.h5", "w"
+                f"{parameters['output_dir']}/checkpoint_iter_{loop}.h5", "w"
             ) as checkpoint:
-                checkpoint.write(a_function, "/checkpoint")
+                checkpoint.write(a_function, "/control")
+                checkpoint.write(xold1_func, "/xold1_func")
+                checkpoint.write(xold2_func, "/xold2_func")
+                checkpoint.write(low_func, "/low_func")
+                checkpoint.write(upp_func, "/upp_func")
 
         signal.signal(signal.SIGUSR1, receive_signal)
 
@@ -372,10 +388,6 @@ class MMASolver(OptimizationSolver):
             # if np.all(np.array(change_arr[-10:]) < accepted_tol):
             #    break
             print(f"Time per iteration: {time.time() - t0}")
-
-        def copy_vec_into_funct(func, vec):
-            with func.dat.vec as a_vec:
-                a_vec.array_w = vec
 
         copy_vec_into_funct(a_function, a_np)
         copy_vec_into_funct(xold1_func, xold1)

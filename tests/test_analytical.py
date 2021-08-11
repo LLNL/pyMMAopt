@@ -40,7 +40,8 @@ def test_analytical():
         "gcmma": True,
     }
     solver = MMASolver(problem, parameters=parameters_mma)
-    rho_opt = solver.solve()
+    results = solver.solve()
+    rho_opt = results["control"]
     assert abs(Jhat(rho_opt) - 0.5443418101973394) < 1e-7
     solution = Function(DG).interpolate(Constant((0.33332924, 0.29630801)))
     assert errornorm(rho_opt, solution) < 1e-7

@@ -118,7 +118,8 @@ def test_compliance(norm, result):
     }
     solver = MMASolver(problem, parameters=parameters_mma)
 
-    rho_opt = solver.solve()
+    results = solver.solve()
+    rho_opt = results["control"]
 
     final_cost_func = Jhat(rho_opt)
 
