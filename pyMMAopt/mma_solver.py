@@ -8,6 +8,7 @@ from firedrake import (
     TrialFunction,
     TestFunction,
     Constant,
+    warning,
 )
 from firedrake import COMM_WORLD, HDF5File
 from mpi4py import MPI
@@ -36,6 +37,8 @@ def func_to_vec(func):
     with func.dat.vec_ro as func_vec:
         vec = func_vec.array
     return vec
+
+
 class MMASolver(OptimizationSolver):
     def __init__(self, problem, parameters=None):
         OptimizationSolver.__init__(self, problem, parameters)
@@ -51,6 +54,7 @@ class MMASolver(OptimizationSolver):
         control_elem = control_funcspace.ufl_element()
 
         supported_fe = ["DQ", "Discontinuous Lagrange"]
+        mass_matrix_support = True
         if control_elem.family() == "TensorProductElement":
             sub_elem = control_elem.sub_elements()
             if (
@@ -59,20 +63,23 @@ class MMASolver(OptimizationSolver):
                 or sub_elem[1].family() not in supported_fe
                 or sub_elem[1].degree() != 0
             ):
-                raise RuntimeError(
-                    "Only zero degree Discontinuous Galerkin function space for extruded\
-                     elements is supported"
-                )
+                mass_matrix_support = False
         elif control_elem.family() not in supported_fe or control_elem.degree() != 0:
-            raise RuntimeError(
-                "Only zero degree Discontinuous Galerkin function space is supported"
-            )
+            mass_matrix_support = False
 
         if parameters.get("norm") == "L2":
-            self.Mdiag = assemble(
-                TrialFunction(control_funcspace) * TestFunction(control_funcspace) * dx,
-                diagonal=True,
-            ).dat.data_ro
+            if mass_matrix_support:
+                self.Mdiag = assemble(
+                    TrialFunction(control_funcspace)
+                    * TestFunction(control_funcspace)
+                    * dx,
+                    diagonal=True,
+                ).dat.data_ro
+            else:
+                warning(
+                    "Only zero degree Discontinuous Galerkin function space is supported for norm = L2"
+                )
+                self.Mdiag = numpy.ones(self.rf.controls[0].control.dat.data_ro.size)
         else:
             self.Mdiag = numpy.ones(self.rf.controls[0].control.dat.data_ro.size)
 
@@ -231,13 +238,17 @@ class MMASolver(OptimizationSolver):
 
             return (nconstraints, fun_g, jac_g)
 
-    def solve(self, xold1_func=None, xold2_func=None, low_func=None,
-              upp_func=None, loop=0):
+    def solve(
+        self, xold1_func=None, xold2_func=None, low_func=None, upp_func=None, loop=0
+    ):
 
         change = 1.0
-        assert ((xold1_func is None and xold2_func is None and
-                low_func is None and upp_func is None) or
-                (xold1_func and xold2_func and low_func and upp_func))
+        assert (
+            xold1_func is None
+            and xold2_func is None
+            and low_func is None
+            and upp_func is None
+        ) or (xold1_func and xold2_func and low_func and upp_func)
 
         parameters = self.parameters
         tol = parameters["tol"]
@@ -406,7 +417,7 @@ class MMASolver(OptimizationSolver):
             "xold2": xold2_func,
             "low": low_func,
             "upp": upp_func,
-            "loop": loop
+            "loop": loop,
         }
         return results
 
