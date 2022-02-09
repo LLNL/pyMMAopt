@@ -1,9 +1,10 @@
 import firedrake as fd
-from firedrake import sqrt, jump, dx, ds, dS, inner, sym, nabla_grad, tr, Identity
+from firedrake import sqrt, jump, dx, ds, dS, inner, sym, nabla_grad, tr, Identity, grad
 import firedrake_adjoint as fda
 
 from pyMMAopt import MMASolver
 import argparse
+
 
 def compliance():
     parser = argparse.ArgumentParser(description="Compliance problem with MMA")
@@ -47,6 +48,8 @@ def compliance():
     assert inner_product == "L2" or inner_product == "euclidean"
 
     mesh = fd.Mesh("./beam_uniform.msh")
+    #mh = fd.MeshHierarchy(mesh, 2)
+    #mesh = mh[-1]
 
     if nref > 0:
         mh = fd.MeshHierarchy(mesh, nref)
@@ -59,20 +62,21 @@ def compliance():
 
     # Elasticity parameters
     E, nu = 1e0, 0.3
-    mu, lmbda = fd.Constant(E / (2 * (1 + nu))), fd.Constant(E * nu / ((1 + nu) * (1 - 2 * nu)))
+    mu, lmbda = fd.Constant(E / (2 * (1 + nu))), fd.Constant(
+        E * nu / ((1 + nu) * (1 - 2 * nu))
+    )
 
     # Helmholtz solver
-    RHO = fd.FunctionSpace(mesh, "DG", 0)
+    RHO = fd.FunctionSpace(mesh, "CG", 1)
     rho = fd.interpolate(fd.Constant(0.1), RHO)
     af, b = fd.TrialFunction(RHO), fd.TestFunction(RHO)
 
-    filter_radius = fd.Constant(0.2)
-    x, y = fd.SpatialCoordinate(mesh)
-    x_ = fd.interpolate(x, RHO)
-    y_ = fd.interpolate(y, RHO)
-    Delta_h = sqrt(jump(x_) ** 2 + jump(y_) ** 2)
-    aH = filter_radius * jump(af) / Delta_h * jump(b) * dS + af * b * dx
-    LH = rho * b * dx
+    #filter_radius = fd.Constant(0.2)
+    #x, y = fd.SpatialCoordinate(mesh)
+    #x_ = fd.interpolate(x, RHO)
+    #y_ = fd.interpolate(y, RHO)
+    #aH = filter_radius * inner(grad(af), grad(b)) * dx + af * b * dx
+    #LH = rho * b * dx
 
     rhof = fd.Function(RHO)
     solver_params = {
@@ -82,24 +86,21 @@ def compliance():
         "mat_mumps_icntl_14": 200,
         "mat_mumps_icntl_24": 1,
     }
-    fd.solve(aH == LH, rhof, solver_parameters=solver_params)
+    #fd.solve(aH == LH, rhof, solver_parameters=solver_params)
+    rhof.assign(rho)
     rhofControl = fda.Control(rhof)
 
     eps = fd.Constant(1e-5)
     p = fd.Constant(3.0)
 
-
     def simp(rho):
         return eps + (fd.Constant(1.0) - eps) * rho ** p
-
 
     def epsilon(v):
         return sym(nabla_grad(v))
 
-
     def sigma(v):
         return 2.0 * mu * epsilon(v) + lmbda * tr(epsilon(v)) * Identity(2)
-
 
     DIRICHLET = 3
     NEUMANN = 4
@@ -110,7 +111,6 @@ def compliance():
 
     u_sol = fd.Function(V)
 
-
     bcs = fd.DirichletBC(V, fd.Constant((0.0, 0.0)), DIRICHLET)
 
     fd.solve(a == L, u_sol, bcs=bcs, solver_parameters=solver_params)
@@ -119,25 +119,20 @@ def compliance():
     Vol = fd.assemble(rhof * dx)
     VolControl = fda.Control(Vol)
 
-
     with fda.stop_annotating():
-        Vlimit = fd.assemble(fd.Constant(1.0) * dx(domain=mesh)) * 0.3
+        Vlimit = fd.assemble(fd.Constant(1.0) * dx(domain=mesh)) * 0.5
 
     rho_viz_f = fd.Function(RHO, name="rho")
     plot_file = f"{output_dir}/design_{inner_product}.pvd"
-    print(plot_file)
     controls_f = fd.File(plot_file)
-
 
     def deriv_cb(j, dj, rho):
         with fda.stop_annotating():
             rho_viz_f.assign(rhofControl.tape_value())
             controls_f.write(rho_viz_f)
 
-
     Jhat = fda.ReducedFunctional(J, c, derivative_cb_post=deriv_cb)
     Volhat = fda.ReducedFunctional(Vol, c)
-
 
     class VolumeConstraint(fda.InequalityConstraint):
         def __init__(self, Vhat, Vlimit, VolControl):
@@ -166,11 +161,12 @@ def compliance():
             """Return the number of components in the constraint vector (here, one)."""
             return 1
 
-
     lb = 1e-5
     ub = 1.0
     problem = fda.MinimizationProblem(
-        Jhat, bounds=(lb, ub), constraints=[VolumeConstraint(Volhat, Vlimit, VolControl)]
+        Jhat,
+        bounds=(lb, ub),
+        constraints=[VolumeConstraint(Volhat, Vlimit, VolControl)],
     )
 
     parameters_mma = {
@@ -181,7 +177,8 @@ def compliance():
         "tol": 1e-6,
         "accepted_tol": 1e-4,
         "norm": inner_product,
-        "gcmma": True,
+        #"norm": "euclidean",
+        "gcmma": False,
     }
     solver = MMASolver(problem, parameters=parameters_mma)
 
@@ -189,6 +186,7 @@ def compliance():
 
     with open(f"{output_dir}/finished_{inner_product}.txt", "w") as f:
         f.write("Done")
+
 
 if __name__ == "__main__":
     compliance()

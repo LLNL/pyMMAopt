@@ -138,7 +138,7 @@ class MMAClient(object):
         dfdx,
     ):
 
-        residual_gradients = (df0dx + np.dot(np.transpose(dfdx), lam))
+        residual_gradients = df0dx + np.dot(np.transpose(dfdx), lam)
 
         mu_min = np.where(residual_gradients > 0.0, residual_gradients, 0.0)
         mu_min *= (self.xmin - x) * np.sqrt(self.Mdiag)
@@ -516,14 +516,14 @@ class MMAClient(object):
                 stmalbe = np.maximum(stmalfa, stmbeta)
                 stmalbexx = np.maximum(stmalbe, stmxx)
                 stminv = np.maximum(stmalbexx, 1.0)
-                steg = 1.0 / np.maximum(stmalbexx, 1.0)
+                step = 1.0 / np.maximum(stmalbexx, 1.0)
                 itto = 1
                 resinewNorm = 2 * residuNorm
                 resinewMax = 1e10
                 while resinewNorm > residuNorm and itto < 200:
                     self.iPrint(
                         ["relax. it.", "Norm(res)", "step"],
-                        [itto, resinewNorm, steg],
+                        [itto, resinewNorm, step],
                         2,
                     )
                     # compute new point
@@ -538,7 +538,7 @@ class MMAClient(object):
                         dmu,
                         dzet,
                         ds,
-                        steg,
+                        step,
                     )
                     x = design_state.x
                     y = design_state.y
@@ -567,19 +567,19 @@ class MMAClient(object):
                     )
 
                     # update step
-                    steg /= 2.0
+                    step /= 2.0
                     itto += 1
 
                     if itto > 198:
                         warning(f"Line search iteration limit {itto} reached")
 
                 self.iPrint(
-                    ["relax. it.", "Norm(res)", "step"], [itto, resinewNorm, steg], 2
+                    ["relax. it.", "Norm(res)", "step"], [itto, resinewNorm, step], 2
                 )
 
                 residuNorm = resinewNorm
                 residuMax = resinewMax
-                steg *= 2.0
+                step *= 2.0
                 it_NL += 1
 
             if it_NL > 198:

@@ -1,7 +1,7 @@
 from pyadjoint.adjfloat import AdjFloat
 from pyadjoint.optimization.optimization_solver import OptimizationSolver
+from firedrake.petsc import PETSc
 from firedrake import (
-    PETSc,
     Function,
     assemble,
     dx,
