@@ -99,6 +99,7 @@ class MMASolver(OptimizationSolver):
             "n": 1,
             "Mdiag": False,
             "tol": 1e-8,
+            "rfunctol": 1e-8,
             "accepted_tol": 1e-4,
             "maximum_iterations": 100,
             "asyinit": 0.5,
@@ -242,7 +243,6 @@ class MMASolver(OptimizationSolver):
         self, xold1_func=None, xold2_func=None, low_func=None, upp_func=None, loop=0
     ):
 
-        change = 1.0
         assert (
             xold1_func is None
             and xold2_func is None
@@ -252,6 +252,7 @@ class MMASolver(OptimizationSolver):
 
         parameters = self.parameters
         tol = parameters["tol"]
+        rfunctol = parameters["rfunctol"]
         # Initial estimation
         control_function = self.rf.controls[0].control
 
@@ -329,7 +330,10 @@ class MMASolver(OptimizationSolver):
         f0val = eval_f(a_np)
         g0val = eval_g(a_np).flatten()
 
-        while change > tol and loop <= itermax:
+        change = 1.0
+        rfunc_change = 1.0
+        prev_f0val = f0val
+        while change > tol and loop <= itermax and rfunc_change > rfunctol:
             t0 = time.time()
 
             # Gradients
@@ -375,6 +379,8 @@ class MMASolver(OptimizationSolver):
 
             local_change = np.abs(np.max(xmma - xold1))
             change = comm.allreduce(local_change, op=MPI.MAX)
+            rfunc_change = abs(prev_f0val - f0val) / abs(prev_f0val)
+            prev_f0val = f0val
             # update design variables
             xold2 = np.copy(xold1)
             xold1 = np.copy(a_np)
@@ -387,7 +393,8 @@ class MMASolver(OptimizationSolver):
             )
             # PETSc.Sys.Print(" Inner iterations: {:d}".format(inner_it), end="")
             PETSc.Sys.Print(" kkt: {:6f}".format(kkt_norm), end="")
-            PETSc.Sys.Print(" change: {:.6f}".format(change))
+            PETSc.Sys.Print(" change: {:.6f}".format(change), end="")
+            PETSc.Sys.Print(" rel obj change: {:.6f}".format(rfunc_change))
 
             change_arr.append(change)
             self.change = change

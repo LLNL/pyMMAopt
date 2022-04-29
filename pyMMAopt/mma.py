@@ -582,7 +582,7 @@ class MMAClient(object):
                 step *= 2.0
                 it_NL += 1
 
-            if it_NL > 198:
+            if it_NL > 500:
                 warning(f"Iteration limit of the Newton solver ({it_NL}) reached")
             epsi *= 0.1
             epsiIt += 1
