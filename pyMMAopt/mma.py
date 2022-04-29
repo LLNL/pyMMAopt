@@ -144,7 +144,7 @@ class MMAClient(object):
         mu_min *= (self.xmin - x) * np.sqrt(self.Mdiag)
         mu_max = np.where(residual_gradients < 0.0, -residual_gradients, 0.0)
         mu_max *= (self.xmax - x) * np.sqrt(self.Mdiag)
-        norm2_grad = mu_min ** 2 + mu_max ** 2
+        norm2_grad = mu_min**2 + mu_max**2
         local_norm2 = np.sum(norm2_grad)
         norm2 = self.comm.allreduce(local_norm2, op=MPI.SUM)
 
@@ -152,7 +152,7 @@ class MMAClient(object):
         residual_constraints = np.where(
             residual_constraints < 0.0, lam * residual_constraints, residual_constraints
         )
-        return np.sqrt(np.sum(residual_constraints ** 2) + norm2)
+        return np.sqrt(np.sum(residual_constraints**2) + norm2)
 
     def resKKT(
         self,
@@ -212,15 +212,15 @@ class MMAClient(object):
         residu_x_max = global_residual_max(local_residu_x)
         # rey
         residu_y = self.c + self.d * y - mu - lam
-        residu_y_norm = np.sum(residu_y ** 2)
+        residu_y_norm = np.sum(residu_y**2)
         residu_y_max = np.linalg.norm(residu_y, np.inf)
         # rez
         residu_z = self.a0 - zet - np.dot(self.a, lam)
-        residu_z_norm = residu_z ** 2
+        residu_z_norm = residu_z**2
         residu_z_max = np.abs(residu_z)
         # relam
         residu_lam = gvec - self.a * z - y + s + b
-        residu_lam_norm = np.sum(residu_lam ** 2)
+        residu_lam_norm = np.sum(residu_lam**2)
         residu_lam_max = np.linalg.norm(residu_lam, np.inf)
         # rexsi
         local_residu_xsi = ne.evaluate("(xsi * (x - alfa) - epsi) * sqrt(Mdiag)")
@@ -232,15 +232,15 @@ class MMAClient(object):
         residu_eta_max = global_residual_max(local_residu_eta)
         # remu
         residu_mu = mu * y - epsi
-        residu_mu_norm = np.sum(residu_mu ** 2)
+        residu_mu_norm = np.sum(residu_mu**2)
         residu_mu_max = np.linalg.norm(residu_mu, np.inf)
         # rezet
         residu_zet = zet * z - epsi
-        residu_zet_norm = residu_zet ** 2
+        residu_zet_norm = residu_zet**2
         residu_zet_max = np.abs(residu_zet)
         # res
         residu_s = lam * s - epsi
-        residu_s_norm = np.sum(residu_s ** 2)
+        residu_s_norm = np.sum(residu_s**2)
         residu_s_max = np.linalg.norm(residu_s, np.inf)
 
         residu_norm = np.sqrt(
