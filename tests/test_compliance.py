@@ -1,6 +1,7 @@
 from firedrake import *
 from firedrake_adjoint import *
 import pytest
+import numpy as np
 
 from pyMMAopt import MMASolver, ReducedInequality
 
