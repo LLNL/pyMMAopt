@@ -1,15 +1,8 @@
 from pyadjoint.adjfloat import AdjFloat
 from pyadjoint.optimization.optimization_solver import OptimizationSolver
 from firedrake.petsc import PETSc
-from firedrake import (
-    Function,
-    assemble,
-    dx,
-    TrialFunction,
-    TestFunction,
-    Constant,
-    warning,
-)
+import firedrake as fd
+from pyadjoint import stop_annotating
 from firedrake import COMM_WORLD, HDF5File
 from mpi4py import MPI
 import time
@@ -47,7 +40,7 @@ class MMASolver(OptimizationSolver):
         if len(self.rf.controls) > 1:
             raise RuntimeError("Only one control is possible for MMA")
 
-        if isinstance(self.rf.controls[0].control, Function) is False:
+        if isinstance(self.rf.controls[0].control, fd.Function) is False:
             raise RuntimeError("Only control of type Function is possible for MMA")
 
         control_funcspace = self.rf.controls[0].control.function_space()
@@ -69,14 +62,15 @@ class MMASolver(OptimizationSolver):
 
         if parameters.get("norm") == "L2":
             if mass_matrix_support:
-                self.Mdiag = assemble(
-                    TrialFunction(control_funcspace)
-                    * TestFunction(control_funcspace)
-                    * dx,
-                    diagonal=True,
-                ).dat.data_ro
+                with stop_annotating():
+                    self.Mdiag = fd.assemble(
+                        fd.TrialFunction(control_funcspace)
+                        * fd.TestFunction(control_funcspace)
+                        * fd.dx,
+                        diagonal=True,
+                    ).dat.data_ro
             else:
-                warning(
+                fd.warning(
                     "Only zero degree Discontinuous Galerkin function space is supported for norm = L2"
                 )
                 self.Mdiag = numpy.ones(self.rf.controls[0].control.dat.data_ro.size)
@@ -140,7 +134,7 @@ class MMASolver(OptimizationSolver):
         self.rf = self.problem.reduced_functional
         assert len(self.rf.controls) == 1, "Only one control is possible for MMA"
         assert isinstance(
-            self.rf.controls[0].control, Function
+            self.rf.controls[0].control, fd.Function
         ), "Only control of type Function is possible for MMA"
 
         (self.lb, self.ub) = self.__get_bounds()
@@ -159,9 +153,9 @@ class MMASolver(OptimizationSolver):
             for (bound, control) in zip(bounds, self.rf.controls):
                 general_lb, general_ub = bound  # could be float, Constant, or Function
 
-                if isinstance(control.control, Function):
+                if isinstance(control.control, fd.Function):
                     n_local_control = control.control.dat.data_ro.size
-                elif isinstance(control.control, (Constant, AdjFloat)):
+                elif isinstance(control.control, (fd.Constant, AdjFloat)):
                     n_local_control = 1
                 else:
                     raise TypeError(
@@ -257,10 +251,10 @@ class MMASolver(OptimizationSolver):
         control_function = self.rf.controls[0].control
 
         if not xold1_func:
-            xold1_func = Function(control_function.function_space())
-            xold2_func = Function(control_function.function_space())
-            low_func = Function(control_function.function_space())
-            upp_func = Function(control_function.function_space())
+            xold1_func = fd.Function(control_function.function_space())
+            xold2_func = fd.Function(control_function.function_space())
+            low_func = fd.Function(control_function.function_space())
+            upp_func = fd.Function(control_function.function_space())
 
         if parameters.get("restart_file", None):
             with HDF5File(parameters["restart_file"], "r") as checkpoint:
