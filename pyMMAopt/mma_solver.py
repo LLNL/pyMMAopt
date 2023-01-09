@@ -3,6 +3,7 @@ from pyadjoint.optimization.optimization_solver import OptimizationSolver
 from firedrake.petsc import PETSc
 import firedrake as fd
 from pyadjoint import stop_annotating
+import gc
 from firedrake import COMM_WORLD, HDF5File
 from mpi4py import MPI
 import time
@@ -236,6 +237,7 @@ class MMASolver(OptimizationSolver):
     def solve(
         self, xold1_func=None, xold2_func=None, low_func=None, upp_func=None, loop=0
     ):
+        gc.disable()
 
         assert (
             xold1_func is None
@@ -328,11 +330,11 @@ class MMASolver(OptimizationSolver):
         rfunc_change = 1.0
         prev_f0val = f0val
         while change > tol and loop <= itermax and rfunc_change > rfunctol:
+            gc.disable()
             t0 = time.time()
 
             # Gradients
             df0dx_func = self.rf.derivative()
-
             jac = self.jac_g(a_function)
 
             # Copy into the numpy arrays
@@ -400,6 +402,7 @@ class MMASolver(OptimizationSolver):
             # if np.all(np.array(change_arr[-10:]) < accepted_tol):
             #    break
             print(f"Time per iteration: {time.time() - t0}")
+            gc.collect()
 
         copy_vec_into_funct(a_function, a_np)
         copy_vec_into_funct(xold1_func, xold1)
