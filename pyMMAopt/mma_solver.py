@@ -3,12 +3,14 @@ from pyadjoint.optimization.optimization_solver import OptimizationSolver
 from firedrake.petsc import PETSc
 import firedrake as fd
 from pyadjoint import stop_annotating
-import gc
 from firedrake import COMM_WORLD, HDF5File
+from firedrake.tsfc_interface import TSFCKernel
+from pyop2.global_kernel import GlobalKernel
+import gc
+import petsc4py
 from mpi4py import MPI
 import time
 import signal
-
 
 try:
     from .mma import MMAClient
@@ -45,6 +47,7 @@ class MMASolver(OptimizationSolver):
             raise RuntimeError("Only control of type Function is possible for MMA")
 
         control_funcspace = self.rf.controls[0].control.function_space()
+        self.mesh = control_funcspace.mesh()
         control_elem = control_funcspace.ufl_element()
 
         supported_fe = ["DQ", "Discontinuous Lagrange"]
@@ -237,8 +240,6 @@ class MMASolver(OptimizationSolver):
     def solve(
         self, xold1_func=None, xold2_func=None, low_func=None, upp_func=None, loop=0
     ):
-        gc.disable()
-
         assert (
             xold1_func is None
             and xold2_func is None
@@ -330,8 +331,13 @@ class MMASolver(OptimizationSolver):
         rfunc_change = 1.0
         prev_f0val = f0val
         while change > tol and loop <= itermax and rfunc_change > rfunctol:
-            gc.disable()
             t0 = time.time()
+            if loop % 10 == 0 and loop > 0:
+                TSFCKernel._cache.clear()
+                GlobalKernel._cache.clear()
+                gc.collect()
+                petsc4py.PETSc.garbage_cleanup(self.mesh._comm)
+                petsc4py.PETSc.garbage_cleanup(self.mesh.comm)
 
             # Gradients
             df0dx_func = self.rf.derivative()
@@ -402,7 +408,6 @@ class MMASolver(OptimizationSolver):
             # if np.all(np.array(change_arr[-10:]) < accepted_tol):
             #    break
             print(f"Time per iteration: {time.time() - t0}")
-            gc.collect()
 
         copy_vec_into_funct(a_function, a_np)
         copy_vec_into_funct(xold1_func, xold1)
